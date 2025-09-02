@@ -1,0 +1,5 @@
+/* src/App.css — minimal styles, safe to grow later */
+* { box-sizing: border-box; }
+html, body, #root { height: 100%; }
+table { width: 100%; }
+th, td { border: none; }
