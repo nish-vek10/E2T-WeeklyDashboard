@@ -1,0 +1,12 @@
+# Python venv
+.venv/
+
+# React deps & build
+frontend/node_modules/
+frontend/build/
+
+# OS / IDE junk (safe to ignore)
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
