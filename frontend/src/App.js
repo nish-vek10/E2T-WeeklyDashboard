@@ -159,13 +159,55 @@ export default function App() {
       const res = await fetch(`${API_BASE}/data/latest?ts=${Date.now()}`);
       if (!res.ok) throw new Error("Failed to load JSON");
       const json = await res.json();
-      // API already returns sorted rows with keys:
-      // customer_name, account_id, country, plan, balance, equity, open_pnl, pct_change
-      setOriginalData(json);
-      setData(json);
-    } catch (e) {
-      setOriginalData([]);
-      setData([]);
+
+      // Normalize possible key variants into a single shape the UI can use
+    const norm = (row) => ({
+      customer_name:
+        row.customer_name ??
+        row["customer_name"] ??
+        row["CUSTOMER NAME"] ??
+        row["Customer Name"] ??
+        "",
+      account_id:
+        row.account_id ??
+        row["account_id"] ??
+        row["ACCOUNT ID"] ??
+        row["Account ID"] ??
+        "",
+      country:
+        row.country ??
+        row["Country"] ??
+        "",
+      plan:
+        row.plan ??
+        row["Plan"] ??
+        null,
+      balance:
+        row.balance ??
+        row["Balance"] ??
+        null,
+      equity:
+        row.equity ??
+        row["Equity"] ??
+        null,
+      open_pnl:
+        row.open_pnl ??
+        row["OpenPnL"] ??
+        row["Open PnL"] ??
+        null,
+      pct_change:
+        row.pct_change ??
+        row["PctChange"] ??
+        row["pctChange"] ??
+        null,
+    });
+
+    const data = Array.isArray(raw) ? raw.map(norm) : [];
+    setOriginalData(data);
+    setData(data);
+  } catch (e) {
+    setOriginalData([]);
+    setData([]);
     }
   }
 
