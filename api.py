@@ -11,7 +11,7 @@ sb = create_client(os.environ["SUPABASE_URL"], os.environ["SUPABASE_SERVICE_KEY"
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
-        "http://localhost:3000",
+        "http://localhost:3001",
         "https://<your-frontend-app>.herokuapp.com",
     ],
     allow_methods=["GET"],
