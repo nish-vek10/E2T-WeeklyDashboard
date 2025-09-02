@@ -1,0 +1,10 @@
+{
+  "name": "crm-dashboard",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "build": "react-scripts build",
+    "heroku-postbuild": "npm run build",
+    "start": "serve -s build"
+  }
+}
