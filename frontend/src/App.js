@@ -2,16 +2,17 @@
 import React, { useEffect, useState, useMemo } from "react";
 import "./App.css";
 
-const SUPABASE_URL = process.env.REACT_APP_SUPABASE_URL;
+// Supabase REST (read-only)
+const SUPABASE_URL  = process.env.REACT_APP_SUPABASE_URL;
 const SUPABASE_ANON = process.env.REACT_APP_SUPABASE_ANON_KEY;
 
 const SB_SELECT =
   "account_id,customer_name,country,plan,balance,equity,open_pnl,pct_change,updated_at";
 
-// Sorted by pct_change DESC with NULLs last, capped at 500 rows
 const SB_ACTIVE_URL = `${SUPABASE_URL}/rest/v1/e2t_active?select=${encodeURIComponent(
   SB_SELECT
 )}&order=pct_change.desc.nullslast&limit=500`;
+
 
 const API_BASE = process.env.REACT_APP_API_BASE || ""; // set in Heroku for prod, blank for same-origin
 
@@ -165,52 +166,59 @@ export default function App() {
     10: "$1,000 Instant Funded Upgrade",
   };
 
-  async function loadData() {
-  try {
-    // Fetch directly from Supabase REST
-    const res = await fetch(SB_ACTIVE_URL, {
-      headers: {
-        apikey: SUPABASE_ANON,
-        Authorization: `Bearer ${SUPABASE_ANON}`,
-      },
-    });
-    if (!res.ok) {
-      const txt = await res.text();
-      throw new Error(`HTTP ${res.status}: ${txt}`);
-    }
-    const rows = await res.json();
+  async function loadData()
+  {
+      try
+      {
+        if (!SUPABASE_URL || !SUPABASE_ANON) {
+          throw new Error("Missing REACT_APP_SUPABASE_URL or REACT_APP_SUPABASE_ANON_KEY");
+        }
 
-    // (Defensive) client-side sort as backup, NULLs last
-    rows.sort((a, b) => {
-      const an = a.pct_change;
-      const bn = b.pct_change;
-      const av = Number.isFinite(Number(an)) ? Number(an) : -Infinity;
-      const bv = Number.isFinite(Number(bn)) ? Number(bn) : -Infinity;
-      return bv - av;
-    });
+        const res = await fetch(SB_ACTIVE_URL, {
+          headers: {
+            apikey: SUPABASE_ANON,
+            Authorization: `Bearer ${SUPABASE_ANON}`,
+          },
+        });
+        if (!res.ok) {
+          const txt = await res.text();
+          throw new Error(`HTTP ${res.status}: ${txt}`);
+        }
 
-    // Normalize to the shape your UI expects (already same field names)
-    const norm = (r) => ({
-      customer_name: r.customer_name ?? "",
-      account_id: r.account_id ?? "",
-      country: r.country ?? "",
-      plan: r.plan ?? null,
-      balance: r.balance ?? null,
-      equity: r.equity ?? null,
-      open_pnl: r.open_pnl ?? null,
-      pct_change: r.pct_change ?? null,
-      updated_at: r.updated_at ?? null,
-    });
+        const rows = await res.json();
 
-    const data = Array.isArray(rows) ? rows.map(norm) : [];
-    setOriginalData(data);
-    setData(data);
-  } catch (e) {
-    console.error(e);
-    setOriginalData([]);
-    setData([]);
+        // Defensive client-side sort (NULLs last)
+        rows.sort((a, b) => {
+          const av = Number.isFinite(Number(a.pct_change)) ? Number(a.pct_change) : -Infinity;
+          const bv = Number.isFinite(Number(b.pct_change)) ? Number(b.pct_change) : -Infinity;
+          return bv - av;
+        });
+
+        const norm = (r) => ({
+          customer_name: r.customer_name ?? "",
+          account_id: r.account_id ?? "",
+          country: r.country ?? "",
+          plan: r.plan ?? null,
+          balance: r.balance ?? null,
+          equity: r.equity ?? null,
+          open_pnl: r.open_pnl ?? null,
+          pct_change: r.pct_change ?? null,
+          updated_at: r.updated_at ?? null,
+        });
+
+        const data = Array.isArray(rows) ? rows.map(norm) : [];
+        setOriginalData(data);
+        setData(data);
+      }
+
+      catch (e)
+      {
+        console.error("[loadData] error:", e);
+        setOriginalData([]);
+        setData([]);
+      }
   }
-}
+
 
   useEffect(() => { loadData(); }, []);
 
