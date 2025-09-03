@@ -1,102 +1,132 @@
 # api.py
 import os
 from typing import Optional
-from fastapi import FastAPI, Depends, Header, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
-from supabase import create_client, Client
 
-SUPABASE_URL = os.environ["SUPABASE_URL"]
-SUPABASE_KEY = os.environ["SUPABASE_SERVICE_ROLE_KEY"]  # server-side only
+from fastapi import FastAPI, Header, HTTPException, Depends, Query
+from fastapi.middleware.cors import CORSMiddleware
+from supabase import create_client
+from datetime import datetime, timezone
+
+SUPABASE_URL = os.environ.get("SUPABASE_URL", "").strip()
+SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY", os.environ.get("SUPABASE_ANON_KEY", "")).strip()
+if not SUPABASE_URL or not SUPABASE_KEY:
+    raise RuntimeError("SUPABASE_URL / SUPABASE_*_KEY not set")
+
 API_BEARER_TOKEN = os.environ.get("API_BEARER_TOKEN", "").strip()
 
-sb: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
-app = FastAPI(title="E2T API", version="1.0.0")
+sb = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-# CORS (adjust origins if you want to lock it down)
+app = FastAPI(title="E2T API")
+
+# CORS: open for now; lock down later if you host the frontend somewhere specific.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"],
+    allow_origins=["*"],  # e.g. ["https://yourdomain.com"]
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
-def require_auth(authorization: Optional[str] = Header(None)):
+
+def _now_iso():
+    return datetime.now(timezone.utc).isoformat()
+
+
+def auth(authorization: Optional[str] = Header(None)):
+    """
+    Optional bearer auth.
+    If API_BEARER_TOKEN is set in Heroku, require a valid "Authorization: Bearer <token>".
+    If not set, open access.
+    """
     if not API_BEARER_TOKEN:
-        return  # auth disabled
+        return
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="Missing bearer token")
     token = authorization.split(" ", 1)[1]
     if token != API_BEARER_TOKEN:
-        raise HTTPException(status_code=403, detail="Invalid token")
+        raise HTTPException(status_code=401, detail="Invalid bearer token")
 
-def _count(table: str) -> int:
-    # use count='exact' trick; supabase-py returns .count
-    res = sb.table(table).select("account_id", count="exact").execute()
-    return res.count or 0
 
 @app.get("/health")
 def health():
-    return {"ok": True}
+    return {"ok": True, "ts": _now_iso()}
 
-@app.get("/counts")
-def counts(dep=Depends(require_auth)):
-    return {
-        "active": _count("e2t_active"),
-        "blown": _count("e2t_blown"),
-        "purchases_api": _count("e2t_purchases_api"),
-        "plan50k": _count("e2t_plan50k"),
-        "baseline": _count("e2t_baseline"),
-    }
 
-@app.get("/active")
-def active(limit: int = 100, offset: int = 0, dep=Depends(require_auth)):
-    # Sort by pct_change desc, NULLS LAST; then by updated_at desc for stable order
-    q = (sb.table("e2t_active")
-          .select("*")
-          .order("pct_change", desc=True, nullsfirst=False)
-          .order("updated_at", desc=True)
-          .range(offset, offset + limit - 1))
-    return q.execute().data
+def fetch_counts():
+    try:
+        rows = sb.table("e2t_counts").select("*").limit(1).execute().data or []
+        return rows[0] if rows else {"active": 0, "blown": 0, "purchases_api": 0, "plan50k": 0, "baseline": 0}
+    except Exception:
+        return {"active": 0, "blown": 0, "purchases_api": 0, "plan50k": 0, "baseline": 0}
 
-@app.get("/blown")
-def blown(limit: int = 100, offset: int = 0, dep=Depends(require_auth)):
-    q = (sb.table("e2t_blown")
-          .select("*")
-          .order("updated_at", desc=True)
-          .range(offset, offset + limit - 1))
-    return q.execute().data
 
-@app.get("/purchases")
-def purchases(limit: int = 100, offset: int = 0, dep=Depends(require_auth)):
-    q = (sb.table("e2t_purchases_api")
-          .select("*")
-          .order("updated_at", desc=True)
-          .range(offset, offset + limit - 1))
-    return q.execute().data
+def fetch_baseline_at():
+    try:
+        rows = sb.table("e2t_baseline").select("baseline_at").order("baseline_at", desc=True).limit(1).execute().data or []
+        return rows[0]["baseline_at"] if rows else None
+    except Exception:
+        return None
 
-@app.get("/plan50k")
-def plan50k(limit: int = 100, offset: int = 0, dep=Depends(require_auth)):
-    q = (sb.table("e2t_plan50k")
-          .select("*")
-          .order("updated_at", desc=True)
-          .range(offset, offset + limit - 1))
-    return q.execute().data
+
+def fetch_table_sorted(name: str, order_col: Optional[str] = None, desc: bool = True, limit: Optional[int] = None, extra_select: str = "*"):
+    q = sb.table(name).select(extra_select)
+    if order_col:
+        q = q.order(order_col, desc=desc)
+    if limit:
+        q = q.limit(limit)
+    return q.execute().data or []
+
 
 @app.get("/data/latest")
-def latest(limit: int = 100, dep=Depends(require_auth)):
-    c = {
-        "active": _count("e2t_active"),
-        "blown": _count("e2t_blown"),
-        "purchases_api": _count("e2t_purchases_api"),
-        "plan50k": _count("e2t_plan50k"),
-        "baseline": _count("e2t_baseline"),
+def data_latest(
+    _=Depends(auth),
+    limit_active: int = Query(500, ge=1, le=5000),
+    limit_blown: int = Query(200, ge=0, le=5000),
+    limit_purchases: int = Query(200, ge=0, le=5000),
+    limit_plan50k: int = Query(100, ge=0, le=5000),
+):
+    """
+    Returns everything the frontend needs in one shot.
+    Active is sorted by pct_change desc (NULLs last).
+    """
+    counts = fetch_counts()
+    baseline_at = fetch_baseline_at()
+
+    # NB: supabase-py orders NULLs last by default when desc=True (that’s what we want)
+    active = fetch_table_sorted(
+        "e2t_active",
+        order_col="pct_change",
+        desc=True,
+        limit=limit_active,
+        extra_select="account_id,customer_name,country,plan,balance,equity,open_pnl,pct_change,updated_at",
+    )
+    blown = fetch_table_sorted(
+        "e2t_blown",
+        order_col="updated_at",
+        desc=True,
+        limit=limit_blown,
+        extra_select="account_id,customer_name,country,plan,balance,equity,open_pnl,updated_at",
+    )
+    purchases = fetch_table_sorted(
+        "e2t_purchases_api",
+        order_col="updated_at",
+        desc=True,
+        limit=limit_purchases,
+        extra_select="account_id,customer_name,country,plan,balance,equity,open_pnl,group_name,updated_at",
+    )
+    plan50k = fetch_table_sorted(
+        "e2t_plan50k",
+        order_col="updated_at",
+        desc=True,
+        limit=limit_plan50k,
+        extra_select="account_id,customer_name,country,plan,balance,equity,open_pnl,updated_at",
+    )
+
+    return {
+        "ts": _now_iso(),
+        "baseline_at": baseline_at,
+        "counts": counts,
+        "active": active,
+        "blown": blown,
+        "purchases_api": purchases,
+        "plan50k": plan50k,
     }
-    top = (sb.table("e2t_active")
-             .select("*")
-             .order("pct_change", desc=True, nullsfirst=False)
-             .order("updated_at", desc=True)
-             .range(0, max(0, limit - 1))
-             .execute()
-             .data)
-    latest_ts = None
-    if top:
-        latest_ts = max([row.get("updated_at") for row in top if row.get("updated_at")], default=None)
-    return {"counts": c, "active_top": top, "updated_at": latest_ts}
