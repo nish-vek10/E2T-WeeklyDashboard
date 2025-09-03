@@ -85,24 +85,47 @@ def get_baseline_map():
     return baseline_at, base
 
 def seed_baseline(now_utc: datetime, accounts: list[dict]):
-    print("[BASELINE] Seeding weekly baseline…")
+    print("[BASELINE] Seeding weekly baseline… (streaming writes)")
     baseline_rows, active_rows = [], []
-    for acc in accounts:
+    flushed = 0
+    CHUNK = 300  # write to Supabase every 300 accounts
+
+    for i, acc in enumerate(accounts, 1):
         uid = str(acc["account_id"])
         s = fetch_sirix(uid); time.sleep(0.2)
-        if not s: continue
+        if not s:
+            continue
+
         eq = s.get("Equity")
         if eq is not None:
-            baseline_rows.append({"account_id": uid, "baseline_equity": float(eq), "baseline_at": now_utc.isoformat()})
+            baseline_rows.append({
+                "account_id": uid,
+                "baseline_equity": float(eq),
+                "baseline_at": now_utc.isoformat()
+            })
+
         active_rows.append({
-            "account_id": uid, "customer_name": acc.get("customer_name"),
-            "country": s.get("Country"), "plan": s.get("Plan"),
-            "balance": s.get("Balance"), "equity": s.get("Equity"), "open_pnl": s.get("OpenPnL"),
+            "account_id": uid,
+            "customer_name": acc.get("customer_name"),
+            "country": s.get("Country"),
+            "plan": s.get("Plan"),
+            "balance": s.get("Balance"),
+            "equity": s.get("Equity"),
+            "open_pnl": s.get("OpenPnL"),
             "pct_change": None
         })
-    if baseline_rows: upsert("e2t_baseline", baseline_rows)
-    if active_rows:   upsert("e2t_active", active_rows)
-    print(f"[BASELINE] Seeded {len(baseline_rows)} baselines.")
+
+        # flush every CHUNK or at the very end
+        if len(baseline_rows) >= CHUNK or i == len(accounts):
+            if baseline_rows:
+                upsert("e2t_baseline", baseline_rows)
+                baseline_rows.clear()
+            if active_rows:
+                upsert("e2t_active", active_rows)
+                active_rows.clear()
+            flushed = i
+            print(f"[BASELINE] Flushed {flushed}/{len(accounts)}")
+
 
 # ----- Main update -----
 def run_update():
