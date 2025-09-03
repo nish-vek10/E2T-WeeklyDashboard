@@ -2,6 +2,17 @@
 import React, { useEffect, useState, useMemo } from "react";
 import "./App.css";
 
+const SUPABASE_URL = process.env.REACT_APP_SUPABASE_URL;
+const SUPABASE_ANON = process.env.REACT_APP_SUPABASE_ANON_KEY;
+
+const SB_SELECT =
+  "account_id,customer_name,country,plan,balance,equity,open_pnl,pct_change,updated_at";
+
+// Sorted by pct_change DESC with NULLs last, capped at 500 rows
+const SB_ACTIVE_URL = `${SUPABASE_URL}/rest/v1/e2t_active?select=${encodeURIComponent(
+  SB_SELECT
+)}&order=pct_change.desc.nullslast&limit=500`;
+
 const API_BASE = process.env.REACT_APP_API_BASE || ""; // set in Heroku for prod, blank for same-origin
 
 // === Helpers ===
@@ -155,61 +166,51 @@ export default function App() {
   };
 
   async function loadData() {
-    try {
-      const res = await fetch(`${API_BASE}/data/latest?ts=${Date.now()}`);
-      if (!res.ok) throw new Error("Failed to load JSON");
-      const json = await res.json();
+  try {
+    // Fetch directly from Supabase REST
+    const res = await fetch(SB_ACTIVE_URL, {
+      headers: {
+        apikey: SUPABASE_ANON,
+        Authorization: `Bearer ${SUPABASE_ANON}`,
+      },
+    });
+    if (!res.ok) {
+      const txt = await res.text();
+      throw new Error(`HTTP ${res.status}: ${txt}`);
+    }
+    const rows = await res.json();
 
-      // Normalize possible key variants into a single shape the UI can use
-    const norm = (row) => ({
-      customer_name:
-        row.customer_name ??
-        row["customer_name"] ??
-        row["CUSTOMER NAME"] ??
-        row["Customer Name"] ??
-        "",
-      account_id:
-        row.account_id ??
-        row["account_id"] ??
-        row["ACCOUNT ID"] ??
-        row["Account ID"] ??
-        "",
-      country:
-        row.country ??
-        row["Country"] ??
-        "",
-      plan:
-        row.plan ??
-        row["Plan"] ??
-        null,
-      balance:
-        row.balance ??
-        row["Balance"] ??
-        null,
-      equity:
-        row.equity ??
-        row["Equity"] ??
-        null,
-      open_pnl:
-        row.open_pnl ??
-        row["OpenPnL"] ??
-        row["Open PnL"] ??
-        null,
-      pct_change:
-        row.pct_change ??
-        row["PctChange"] ??
-        row["pctChange"] ??
-        null,
+    // (Defensive) client-side sort as backup, NULLs last
+    rows.sort((a, b) => {
+      const an = a.pct_change;
+      const bn = b.pct_change;
+      const av = Number.isFinite(Number(an)) ? Number(an) : -Infinity;
+      const bv = Number.isFinite(Number(bn)) ? Number(bn) : -Infinity;
+      return bv - av;
     });
 
-    const data = Array.isArray(raw) ? raw.map(norm) : [];
+    // Normalize to the shape your UI expects (already same field names)
+    const norm = (r) => ({
+      customer_name: r.customer_name ?? "",
+      account_id: r.account_id ?? "",
+      country: r.country ?? "",
+      plan: r.plan ?? null,
+      balance: r.balance ?? null,
+      equity: r.equity ?? null,
+      open_pnl: r.open_pnl ?? null,
+      pct_change: r.pct_change ?? null,
+      updated_at: r.updated_at ?? null,
+    });
+
+    const data = Array.isArray(rows) ? rows.map(norm) : [];
     setOriginalData(data);
     setData(data);
   } catch (e) {
+    console.error(e);
     setOriginalData([]);
     setData([]);
-    }
   }
+}
 
   useEffect(() => { loadData(); }, []);
 
