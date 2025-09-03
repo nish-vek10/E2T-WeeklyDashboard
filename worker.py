@@ -67,7 +67,7 @@ def upsert(table: str, rows: list[dict], on_conflict="account_id", chunk=500):
     for i in range(0, len(rows), chunk):
         batch = rows[i:i+chunk]
         if not batch: continue
-        now = datetime.utcnow().isoformat()
+        now = datetime.now(timezone.utc).isoformat()
         for r in batch: r["updated_at"] = now
         sb.table(table).upsert(batch, on_conflict=on_conflict).execute()
 
