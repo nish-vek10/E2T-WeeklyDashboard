@@ -1,0 +1,162 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>E2T Dashboard (Live)</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <style>
+      body { font-family: system-ui, Arial, sans-serif; margin: 24px; }
+      .row { display:flex; gap:12px; flex-wrap:wrap; margin-bottom:16px; }
+      .card { padding:12px 16px; border:1px solid #ddd; border-radius:10px; }
+      table { border-collapse: collapse; width:100%; }
+      th, td { border-bottom:1px solid #eee; padding:8px 6px; text-align:left; font-size:14px; }
+      th { position: sticky; top: 0; background: #fafafa; }
+      .muted { color:#777; font-size:12px; }
+      .green { color: #0a7b22; font-weight: 600; }
+      .red { color: #b80606; font-weight: 600; }
+      .toolbar { display:flex; gap:8px; align-items:center; margin:12px 0; }
+      input[type="text"]{ padding:8px; border:1px solid #ddd; border-radius:8px; min-width: 280px;}
+      .limit { max-height: 70vh; overflow:auto; border:1px solid #eee; border-radius:10px; }
+    </style>
+  </head>
+  <body>
+    <h1>E2T Dashboard</h1>
+    <div id="meta" class="muted">Loading…</div>
+
+    <div class="row" id="countsRow"></div>
+
+    <div class="toolbar">
+      <input id="search" type="text" placeholder="Search customer or account…" />
+      <label class="muted">show top&nbsp;<input id="limit" type="number" min="10" max="1000" value="500" style="width:70px;"> active</label>
+      <button id="refresh">Refresh</button>
+    </div>
+
+    <div class="limit">
+      <table id="activeTable">
+        <thead>
+          <tr>
+            <th>#</th>
+            <th>Account</th>
+            <th>Customer</th>
+            <th>Country</th>
+            <th>Plan</th>
+            <th>Balance</th>
+            <th>Equity</th>
+            <th>OpenPnL</th>
+            <th>% Change</th>
+            <th>Updated</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
+
+    <script>
+      // === Configure these two ===
+      const API_BASE = "https://e2t-api-0a818905b168.herokuapp.com";
+      const TOKEN = "E2T_2025_Prod_x9n3Qp7z0L"; // leave "" if you didn't set API_BEARER_TOKEN
+
+      const meta = document.getElementById("meta");
+      const countsRow = document.getElementById("countsRow");
+      const tbody = document.querySelector("#activeTable tbody");
+      const search = document.getElementById("search");
+      const limitInput = document.getElementById("limit");
+      const refreshBtn = document.getElementById("refresh");
+
+      function fmt(n, d=2) {
+        if (n === null || n === undefined || Number.isNaN(n)) return "";
+        return Number(n).toLocaleString(undefined, {maximumFractionDigits:d});
+      }
+      function fmtPct(n) {
+        if (n === null || n === undefined || Number.isNaN(n)) return "";
+        const s = Number(n).toFixed(2);
+        if (n > 0) return `<span class="green">+${s}%</span>`;
+        if (n < 0) return `<span class="red">${s}%</span>`;
+        return `${s}%`;
+      }
+      function esc(s){ return String(s || "").replace(/[&<>"']/g, m=>({ "&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;" }[m])); }
+
+      async function fetchLatest() {
+        const n = parseInt(limitInput.value || "500", 10);
+        const url = `${API_BASE}/data/latest?limit_active=${n}&limit_blown=0&limit_purchases=0&limit_plan50k=0`;
+        const headers = TOKEN ? { "Authorization": "Bearer " + TOKEN } : {};
+        const r = await fetch(url, { headers });
+        if (!r.ok) throw new Error(`API ${r.status}`);
+        return r.json();
+      }
+
+      function renderCounts(c) {
+        countsRow.innerHTML = "";
+        const cards = [
+          ["Active", c.active],
+          ["Blown", c.blown],
+          ["Purchases (API)", c.purchases_api],
+          ["Plan 50k", c.plan50k],
+          ["Baseline", c.baseline],
+        ];
+        for (const [label, val] of cards) {
+          const div = document.createElement("div");
+          div.className = "card";
+          div.innerHTML = `<div style="font-size:13px">${esc(label)}</div>
+                           <div style="font-size:24px;font-weight:700">${fmt(val,0)}</div>`;
+          countsRow.appendChild(div);
+        }
+      }
+
+      function renderActiveRows(rows, q) {
+        tbody.innerHTML = "";
+        const ql = (q || "").trim().toLowerCase();
+        const filtered = !ql ? rows : rows.filter(r => {
+          const hay = [r.account_id, r.customer_name].map(x => String(x || "").toLowerCase()).join(" ");
+          return hay.includes(ql);
+        });
+        filtered.forEach((r, i) => {
+          const tr = document.createElement("tr");
+          tr.innerHTML = `
+            <td>${i+1}</td>
+            <td>${esc(r.account_id)}</td>
+            <td>${esc(r.customer_name)}</td>
+            <td>${esc(r.country)}</td>
+            <td>${fmt(r.plan,0)}</td>
+            <td>${fmt(r.balance,2)}</td>
+            <td>${fmt(r.equity,2)}</td>
+            <td>${fmt(r.open_pnl,2)}</td>
+            <td>${fmtPct(r.pct_change)}</td>
+            <td class="muted">${esc(r.updated_at || "").replace("T"," ").replace("Z","")}</td>
+          `;
+          tbody.appendChild(tr);
+        });
+      }
+
+      async function load() {
+        meta.textContent = "Loading…";
+        try {
+          const data = await fetchLatest();
+          meta.textContent = `Baseline at: ${data.baseline_at || "n/a"} • Server: ${data.ts}`;
+          renderCounts(data.counts || {});
+          renderActiveRows(data.active || [], search.value);
+        } catch (e) {
+          meta.textContent = "Failed to load: " + e;
+          console.error(e);
+        }
+      }
+
+      refreshBtn.onclick = load;
+      search.oninput = () => {
+        // Re-filter without hitting the API again
+        const rows = window._lastActive || [];
+        renderActiveRows(rows, search.value);
+      };
+
+      // Keep a copy of active for local filtering
+      const _origFetch = fetchLatest;
+      fetchLatest = async function() {
+        const d = await _origFetch();
+        window._lastActive = d.active || [];
+        return d;
+      };
+
+      load();
+    </script>
+  </body>
+</html>
