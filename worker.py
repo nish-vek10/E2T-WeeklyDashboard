@@ -47,16 +47,16 @@ CRM_COL_TEMP_NAME    = "lv_tempname"
 
 # Supabase client
 def make_supabase_client():
-    timeout = httpx.Timeout(30.0, connect=30.0, read=30.0, write=30.0)
-    limits  = httpx.Limits(max_keepalive_connections=5, max_connections=20)
-    client  = httpx.Client(http2=False, timeout=timeout, limits=limits)
-    headers = {
-        "apikey": SUPABASE_KEY,                      # <-- use service/anon key here
-        "Authorization": f"Bearer {SUPABASE_KEY}",   # <-- same key here
+    # postgrest 0.16.x: no custom http_client arg; set auth + apikey header
+    client = PostgrestClient(f"{SUPABASE_URL}/rest/v1", schema="public")
+    client.auth(SUPABASE_KEY)  # adds Authorization: Bearer <key>
+    client.headers.update({
+        "apikey": SUPABASE_KEY,
         "Accept-Profile": "public",
         "Content-Profile": "public",
-    }
-    return PostgrestClient(f"{SUPABASE_URL}/rest/v1", headers=headers, http_client=client)
+    })
+    return client
+
 
 
 # global client instance + simple use counter so we recycle occasionally
