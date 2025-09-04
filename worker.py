@@ -9,8 +9,10 @@ import pandas as pd
 from typing import Optional, Tuple, Dict, Any, List
 from datetime import datetime, timedelta, timezone
 from collections import Counter
+import os, time, random
+import httpx
+from postgrest import Postgrest
 
-from supabase import create_client, Client
 
 # -------------------------
 # Environment configuration
@@ -44,7 +46,23 @@ CRM_COL_CUSTOMER     = "lv_accountidname"
 CRM_COL_TEMP_NAME    = "lv_tempname"
 
 # Supabase client
-sb: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+def make_supabase_client():
+    # Disable HTTP/2 (avoids http2 GOAWAY/stream-id issues),
+    # set sensible timeouts, and small connection pool.
+    timeout = httpx.Timeout(30.0, connect=30.0, read=30.0, write=30.0)
+    limits  = httpx.Limits(max_keepalive_connections=5, max_connections=20)
+    client  = httpx.Client(http2=False, timeout=timeout, limits=limits)
+    headers = {
+        "apikey": SUPABASE_KEY,
+        "Authorization": f"Bearer {SUPABASE_KEY}",
+        "Accept-Profile": "public",
+        "Content-Profile": "public",
+    }
+    return Postgrest(f"{SUPABASE_URL}/rest/v1", headers=headers, http_client=client)
+
+# global client instance + simple use counter so we recycle occasionally
+sb = make_supabase_client()
+_SB_OPS = 0
 
 # -------------------------
 # Time helpers (UTC always)
@@ -190,9 +208,54 @@ def fetch_sirix_data(user_id: Any) -> Optional[Dict[str, Any]]:
 # -------------------------
 # DB helpers
 # -------------------------
-def upsert_row(table: str, row: Dict[str, Any]) -> None:
-    row = {**row, "updated_at": now_iso_utc()}
-    sb.table(table).upsert(row, on_conflict="account_id").execute()
+def upsert_row(table: str, row: dict, on_conflict: str = "account_id"):
+    """
+    Network-hardened upsert:
+      - retries transient network errors with exponential backoff
+      - periodically recycles the HTTP client
+      - logs and SKIPS the row after final failure (keeps the loop alive)
+    """
+    global sb, _SB_OPS
+    _SB_OPS += 1
+    if _SB_OPS % 1000 == 0:
+        try:
+            sb = make_supabase_client()
+            print("[NET] Recycled Supabase HTTP client after 1000 operations.")
+        except Exception as e:
+            print(f"[NET] Client recycle failed (continuing): {e}")
+
+    backoff = 0.5
+    max_attempts = 6
+
+    for attempt in range(1, max_attempts + 1):
+        try:
+            sb.table(table).upsert(row, on_conflict=on_conflict).execute()
+            return  # success
+        except Exception as e:
+            err = str(e)
+            retryable_signals = (
+                "RemoteProtocolError", "ConnectionResetError", "ServerDisconnected",
+                "ReadTimeout", "WriteError", "PoolTimeout", "Timed out",
+                "Connection reset", "EOF", "temporarily unavailable"
+            )
+            should_retry = any(sig in err for sig in retryable_signals)
+
+            if attempt == max_attempts or not should_retry:
+                # Final failure or non-retryable -> log and SKIP (don’t crash the run)
+                print(f"[ERROR] upsert_row: giving up on table={table}. "
+                      f"attempt={attempt}/{max_attempts}. error={err[:300]}")
+                return
+
+            # Retry path: re-make client + backoff
+            print(f"[WARN] upsert_row failed (attempt {attempt}/{max_attempts}). "
+                  f"Retrying in {backoff:.1f}s … err={err[:160]}")
+            try:
+                sb = make_supabase_client()
+            except Exception as e2:
+                print(f"[WARN] client remake failed (continuing): {e2}")
+            time.sleep(backoff)
+            backoff = min(backoff * 2, 10.0) * (1.0 + random.random() * 0.3)
+
 
 def delete_if_exists(table: str, account_id: str) -> None:
     sb.table(table).delete().eq("account_id", account_id).execute()
