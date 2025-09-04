@@ -13,8 +13,8 @@ const SB_ACTIVE_URL = `${SUPABASE_URL}/rest/v1/e2t_active?select=${encodeURIComp
   SB_SELECT
 )}&order=pct_change.desc.nullslast&limit=500`;
 
-
-const API_BASE = process.env.REACT_APP_API_BASE || ""; // set in Heroku for prod, blank for same-origin
+// NOTE: We no longer render API_BASE anywhere (you asked to hide it)
+const API_BASE = process.env.REACT_APP_API_BASE || "";
 
 // === Helpers ===
 function fmtNumber(v, digits = 2) {
@@ -61,6 +61,23 @@ function diffToDHMS(target, now = new Date()) {
   return { d, h, m, s };
 }
 
+// London timezone label (BST/GMT) for the reset caption
+function getLondonTZAbbrev(d = new Date()) {
+  try {
+    const parts = new Intl.DateTimeFormat("en-GB", {
+      hour: "2-digit",
+      minute: "2-digit",
+      timeZone: "Europe/London",
+      timeZoneName: "short",
+    }).formatToParts(d);
+    const tz = parts.find(p => p.type === "timeZoneName")?.value || "";
+    // Normalize "GMT+1" etc. to "GMT"
+    return tz.replace(/^GMT(?:[+-]\d+)?$/, "GMT");
+  } catch {
+    return "GMT/BST";
+  }
+}
+
 // flags
 function getFlagOnly(countryName) {
   const countryMap = {
@@ -87,7 +104,7 @@ function getFlagOnly(countryName) {
         height: "28px",
         objectFit: "cover",
         borderRadius: "3px",
-        boxShadow: "0 0 3px rgba(1,2,2,5)"
+        boxShadow: "0 0 3px rgba(0,0,0,0.6)"
       }}
     />
   );
@@ -104,11 +121,11 @@ function shortName(full) {
   return lastInitial ? `${first} ${lastInitial}` : first;
 }
 
-// Top-3 row styles (by GLOBAL rank)
+// Top-3 row styles (dark tints)
 const rowStyleForRank = (r) => {
-  if (r === 0) return { background: "#fff9ec" };
-  if (r === 1) return { background: "#f5f7ff" };
-  if (r === 2) return { background: "#f7fff5" };
+  if (r === 0) return { background: "#1a1505" }; // gold tint
+  if (r === 1) return { background: "#0f1420" }; // silver/blue tint
+  if (r === 2) return { background: "#0f1a12" }; // bronze/green tint
   return {};
 };
 const rowHeightForRank = (r) => {
@@ -219,7 +236,6 @@ export default function App() {
       }
   }
 
-
   useEffect(() => { loadData(); }, []);
 
   // Re-fetch at every even hour :30
@@ -283,19 +299,29 @@ export default function App() {
   };
   const visibleForPrizes = top30Data.slice(0, 10);
 
+  // Live tz label (recomputed each render thanks to the ticking countdown)
+  const londonTZ = getLondonTZAbbrev();
+
   return (
-    <div style={{ padding: "20px", fontFamily: "'Segoe UI', sans-serif", background: "#fafafa" }}>
+    <div
+      style={{
+        padding: "20px",
+        fontFamily: "Switzer, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, 'Helvetica Neue', sans-serif",
+        background: "transparent",          // inherit global dark background
+        color: "#eaeaea"
+      }}
+    >
       <h1
         style={{
           fontSize: "3.0rem",
-          fontWeight: "900",
+          fontWeight: 900,
           marginBottom: "16px",
-          fontFamily: "'Aptos Display', 'Segoe UI', sans-serif",
+          fontFamily: "Switzer, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, 'Helvetica Neue', sans-serif",
           letterSpacing: "0.7px",
           textAlign: "center",
           textTransform: "uppercase",
           lineHeight: "1.15",
-          background: "linear-gradient(90deg, #111 0%, #d4af37 25%, #111 50%, #d4af37 75%, #111 100%)",
+          background: "linear-gradient(90deg, #eee 0%, #d4af37 25%, #eee 50%, #d4af37 75%, #eee 100%)",
           backgroundSize: "300% 100%",
           WebkitBackgroundClip: "text",
           backgroundClip: "text",
@@ -316,12 +342,14 @@ export default function App() {
             style={{
               padding: "10px 14px",
               width: "260px",
-              border: "1px solid #ccc",
+              border: "1px solid #2a2a2a",
               borderRadius: "6px",
               fontSize: "14px",
-              fontFamily: "'Segoe UI', sans-serif",
-              boxShadow: "1px 1px 5px rgba(0,0,0,2)",
-              outline: "none"
+              fontFamily: "inherit",
+              boxShadow: "0 0 0 rgba(0,0,0,0)",
+              outline: "none",
+              background: "#111",
+              color: "#eaeaea"
             }}
           />
         </div>
@@ -335,10 +363,11 @@ export default function App() {
               width: "100%",
               borderCollapse: "collapse",
               fontSize: 13,
-              background: "#fff",
-              boxShadow: "0 1px 6px rgba(0,0,0,2)",
+              background: "#121212",
+              boxShadow: "0 1px 6px rgba(0,0,0,0.6)",
               borderRadius: 8,
-              overflow: "hidden"
+              overflow: "hidden",
+              color: "#eaeaea"
             }}
           >
             <thead style={gradientTheadStyle}>
@@ -349,11 +378,11 @@ export default function App() {
             </thead>
             <tbody>
               {visibleForPrizes.length === 0 && (
-                <tr><td colSpan={2} style={{ padding: 10, color: "#777" }}>No data</td></tr>
+                <tr><td colSpan={2} style={{ padding: 10, color: "#999" }}>No data</td></tr>
               )}
               {visibleForPrizes.map((row, idx) => {
                 const globalRank = idx;
-                const zebra = { background: idx % 2 === 0 ? "#ffffff" : "#fafafa" };
+                const zebra = { background: idx % 2 === 0 ? "#121212" : "#0f0f0f" };
                 const highlight = rowStyleForRank(globalRank);
                 const rowStyle = { ...zebra, ...highlight };
                 const prize = prizeMap[globalRank + 1] || "";
@@ -405,11 +434,13 @@ export default function App() {
                 width: "100%",
                 borderCollapse: "collapse",
                 textAlign: "center",
-                fontFamily: "'Aptos Display', 'Segoe UI', sans-serif",
+                fontFamily: "inherit",
                 fontSize: "14px",
-                background: "#fff",
+                background: "#121212",
                 borderRadius: 8,
-                overflow: "hidden"
+                overflow: "hidden",
+                color: "#eaeaea",
+                borderColor: "#1e1e1e"
               }}
             >
               <thead style={gradientTheadStyle}>
@@ -427,7 +458,7 @@ export default function App() {
               <tbody>
                 {rowsToRender.length === 0 ? (
                   <tr>
-                    <td colSpan={5} style={{ padding: 20, color: "#777" }}>
+                    <td colSpan={5} style={{ padding: 20, color: "#999" }}>
                       No records found.
                     </td>
                   </tr>
@@ -437,7 +468,7 @@ export default function App() {
                     const globalRank = globalRankById[id];
                     const displayRank = (globalRank >= 0 && Number.isInteger(globalRank)) ? globalRank + 1 : "";
 
-                    const zebra = { background: rowIndex % 2 === 0 ? "#ffffff" : "#f9f9f9" };
+                    const zebra = { background: rowIndex % 2 === 0 ? "#121212" : "#0f0f0f" };
                     const highlight = rowStyleForRank(globalRank);
                     const rowStyle = { ...zebra, ...highlight };
 
@@ -450,7 +481,7 @@ export default function App() {
                     const leftAccent = accentForRank(globalRank);
 
                     const n = numVal(row["pct_change"]);
-                    const pctColor = n == null ? "#222" : (n > 0 ? "#1e8e3e" : (n < 0 ? "#d93025" : "#222"));
+                    const pctColor = n == null ? "#eaeaea" : (n > 0 ? "#34c759" : (n < 0 ? "#ff453a" : "#eaeaea"));
                     let pctFont = rowFontSize;
                     if (globalRank === 0) pctFont = "calc(17px + 6px)";
                     else if (globalRank === 1) pctFont = "calc(16px + 4px)";
@@ -489,10 +520,11 @@ export default function App() {
               width: "100%",
               borderCollapse: "collapse",
               fontSize: 13,
-              background: "#fff",
-              boxShadow: "0 1px 6px rgba(0,0,0,2)",
+              background: "#121212",
+              boxShadow: "0 1px 6px rgba(0,0,0,0.6)",
               borderRadius: 8,
-              overflow: "hidden"
+              overflow: "hidden",
+              color: "#eaeaea"
             }}
           >
             <thead style={gradientTheadStyle}>
@@ -503,7 +535,7 @@ export default function App() {
               </tr>
             </thead>
             <tbody>
-              <tr style={{ background: "#fafafa" }}>
+              <tr style={{ background: "#0f0f0f" }}>
                 <td style={{ padding: "8px 6px", fontWeight: 700, textAlign: "center" }}>DD</td>
                 <td style={{ padding: "8px 6px", fontWeight: 700, textAlign: "center" }}>HH</td>
                 <td style={{ padding: "8px 6px", fontWeight: 700, textAlign: "center" }}>MM</td>
@@ -516,15 +548,14 @@ export default function App() {
                 <td style={{ padding: "10px 6px", textAlign: "center", fontWeight: 900, fontSize: 18 }}>{pad2(tleft.s)}</td>
               </tr>
               <tr>
-                <td colSpan={4} style={{ padding: "8px 6px", textAlign: "center", color: "#666", fontSize: 12 }}>
-                  NEXT RESET: MONDAY 12:00PM BST
+                <td colSpan={4} style={{ padding: "8px 6px", textAlign: "center", color: "#aaa", fontSize: 12 }}>
+                  NEXT RESET: MONDAY 12:00 PM {londonTZ}
                 </td>
               </tr>
             </tbody>
           </table>
-          <div style={{ marginTop: 8, color: "#666", fontSize: 12, textAlign: "center" }}>
-            API: <code>{API_BASE || "(same origin)"}</code>
-          </div>
+
+          {/* Removed the API footer per your request */}
         </div>
       </div>
     </div>

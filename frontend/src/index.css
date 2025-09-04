@@ -1,1 +1,29 @@
-body { margin: 0; background: #fafafa; }
+/* Global dark theme + Switzer font */
+:root {
+  color-scheme: dark;
+}
+
+html, body, #root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: #0b0b0b;     /* deep black */
+  color: #eaeaea;           /* light text */
+  font-family: "Switzer", -apple-system, BlinkMacSystemFont, "Segoe UI",
+               Roboto, Arial, "Helvetica Neue", sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+input, button, select, textarea {
+  font-family: inherit;
+  color: #eaeaea;
+  background: #111;
+  border: 1px solid #2a2a2a;
+}
+
+code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+}
