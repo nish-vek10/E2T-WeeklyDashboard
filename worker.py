@@ -11,7 +11,7 @@ from datetime import datetime, timedelta, timezone
 from collections import Counter
 import os, time, random
 import httpx
-from postgrest import Postgrest
+from postgrest import PostgrestClient
 
 
 # -------------------------
@@ -47,18 +47,17 @@ CRM_COL_TEMP_NAME    = "lv_tempname"
 
 # Supabase client
 def make_supabase_client():
-    # Disable HTTP/2 (avoids http2 GOAWAY/stream-id issues),
-    # set sensible timeouts, and small connection pool.
     timeout = httpx.Timeout(30.0, connect=30.0, read=30.0, write=30.0)
     limits  = httpx.Limits(max_keepalive_connections=5, max_connections=20)
     client  = httpx.Client(http2=False, timeout=timeout, limits=limits)
     headers = {
-        "apikey": SUPABASE_KEY,
-        "Authorization": f"Bearer {SUPABASE_KEY}",
+        "apikey": SUPABASE_KEY,                      # <-- use service/anon key here
+        "Authorization": f"Bearer {SUPABASE_KEY}",   # <-- same key here
         "Accept-Profile": "public",
         "Content-Profile": "public",
     }
-    return Postgrest(f"{SUPABASE_URL}/rest/v1", headers=headers, http_client=client)
+    return PostgrestClient(f"{SUPABASE_URL}/rest/v1", headers=headers, http_client=client)
+
 
 # global client instance + simple use counter so we recycle occasionally
 sb = make_supabase_client()
@@ -100,7 +99,7 @@ def fetch_crm_chunk(offset: int, limit: int) -> List[Dict[str, Any]]:
     Falls back to client-side filter if needed.
     """
     cols = f"{CRM_COL_ACCOUNT_ID}, {CRM_COL_CUSTOMER}, {CRM_COL_TEMP_NAME}"
-    q = sb.table(CRM_TABLE).select(cols).range(offset, offset + limit - 1)
+    q = sb.from_(CRM_TABLE).select(cols).range(offset, offset + limit - 1)
     try:
         # server-side "NOT ILIKE '%purchases%'" on temp name
         data = q.not_.ilike(CRM_COL_TEMP_NAME, "%purchases%").execute().data or []
@@ -229,7 +228,7 @@ def upsert_row(table: str, row: dict, on_conflict: str = "account_id"):
 
     for attempt in range(1, max_attempts + 1):
         try:
-            sb.table(table).upsert(row, on_conflict=on_conflict).execute()
+            sb.from_(table).upsert(row, on_conflict=on_conflict).execute()
             return  # success
         except Exception as e:
             err = str(e)
@@ -258,7 +257,7 @@ def upsert_row(table: str, row: dict, on_conflict: str = "account_id"):
 
 
 def delete_if_exists(table: str, account_id: str) -> None:
-    sb.table(table).delete().eq("account_id", account_id).execute()
+    sb.from_(table).delete().eq("account_id", account_id).execute()
 
 def move_exclusive(account_id: str, target_table: str) -> None:
     others = {TABLE_ACTIVE, TABLE_BLOWN, TABLE_PURCHASES, TABLE_PLAN50K} - {target_table}
@@ -307,7 +306,7 @@ def classify_and_payload(row_from_crm: Dict[str, Any],
 # Baseline helpers (DB)
 # -------------------------
 def get_current_baseline_at() -> Optional[datetime]:
-    res = sb.table(TABLE_BASELINE).select("baseline_at").order("baseline_at", desc=True).limit(1).execute()
+    res = sb.from_(TABLE_BASELINE).select("baseline_at").order("baseline_at", desc=True).limit(1).execute()
     rows = res.data or []
     if not rows:
         return None
@@ -317,7 +316,7 @@ def get_current_baseline_at() -> Optional[datetime]:
         return None
 
 def load_baseline_map() -> Dict[str, float]:
-    res = sb.table(TABLE_BASELINE).select("account_id, baseline_equity").execute()
+    res = sb.from_(TABLE_BASELINE).select("account_id, baseline_equity").execute()
     rows = res.data or []
     out: Dict[str, float] = {}
     for r in rows:
