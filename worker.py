@@ -1,4 +1,19 @@
 # worker.py
+# --------------------------------------------------------------------
+# E2T background worker (Heroku)
+#
+# This version **does not** use the 'postgrest' Python client.
+# It calls Supabase PostgREST directly with `requests`, which keeps
+# everything synchronous and avoids async/coroutine issues.
+#
+# Key points:
+#  - Uses SUPABASE_* env vars for auth
+#  - Provides tiny helpers: pg_select / pg_upsert / pg_delete
+#  - Paginates CRM with limit/offset
+#  - Retries transient network errors with backoff
+#  - Keeps your Sirix API logic & classification unchanged
+# --------------------------------------------------------------------
+
 import os
 import sys
 import time
@@ -9,10 +24,7 @@ import pandas as pd
 from typing import Optional, Tuple, Dict, Any, List
 from datetime import datetime, timedelta, timezone
 from collections import Counter
-import os, time, random
-import httpx
-from postgrest import PostgrestClient
-
+import random  # for jitter in backoff
 
 # -------------------------
 # Environment configuration
@@ -22,6 +34,18 @@ SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY", os.environ.get("SUPAB
 if not SUPABASE_URL or not SUPABASE_KEY:
     print("[FATAL] SUPABASE_URL / SUPABASE_*_KEY not set.", file=sys.stderr)
     sys.exit(1)
+
+# Base REST endpoint and default headers for PostgREST
+BASE_REST = f"{SUPABASE_URL}/rest/v1"
+PG_HEADERS_BASE = {
+    "apikey": SUPABASE_KEY,
+    "Authorization": f"Bearer {SUPABASE_KEY}",
+    "Accept": "application/json",
+    "Content-Type": "application/json",
+    # Optional: specify schema headers (default is public)
+    "Accept-Profile": "public",
+    "Content-Profile": "public",
+}
 
 CRM_TABLE = os.environ.get("CRM_TABLE", "lv_tpaccount").strip()
 
@@ -33,36 +57,138 @@ RUN_NOW_ON_START = os.environ.get("E2T_RUN_NOW", "true").lower() == "true"
 RATE_DELAY_SEC = float(os.environ.get("E2T_RATE_DELAY_SEC", "0.2"))
 E2T_TZ_LABEL = os.environ.get("E2T_TZ_LABEL", "UTC")
 
-# Tables
-TABLE_ACTIVE = "e2t_active"
-TABLE_BLOWN = "e2t_blown"
-TABLE_PURCHASES = "e2t_purchases_api"
-TABLE_PLAN50K = "e2t_plan50k"
-TABLE_BASELINE = "e2t_baseline"
+# Destination tables
+TABLE_ACTIVE     = "e2t_active"
+TABLE_BLOWN      = "e2t_blown"
+TABLE_PURCHASES  = "e2t_purchases_api"
+TABLE_PLAN50K    = "e2t_plan50k"
+TABLE_BASELINE   = "e2t_baseline"
 
 # CRM column names (all lowercase in Supabase)
-CRM_COL_ACCOUNT_ID   = "lv_name"
-CRM_COL_CUSTOMER     = "lv_accountidname"
-CRM_COL_TEMP_NAME    = "lv_tempname"
+CRM_COL_ACCOUNT_ID = "lv_name"
+CRM_COL_CUSTOMER   = "lv_accountidname"
+CRM_COL_TEMP_NAME  = "lv_tempname"
 
-# Supabase client
-def make_supabase_client():
-    # Build a PostgrestClient and pass headers up front.
-    # No http_client arg in 0.16.x, and no .headers attribute to mutate later.
-    return PostgrestClient(
-        f"{SUPABASE_URL}/rest/v1",
-        schema="public",
-        headers={
-            "apikey": SUPABASE_KEY,                      # Supabase requires this header
-            "Authorization": f"Bearer {SUPABASE_KEY}",   # Bearer token
-            "Accept-Profile": "public",
-            "Content-Profile": "public",
-        },
+
+# -------------------------
+# Tiny PostgREST helpers
+# -------------------------
+def _retryable(err_text: str) -> bool:
+    """Heuristic: which network-ish errors should we retry?"""
+    signals = (
+        "RemoteProtocolError", "ConnectionResetError", "ServerDisconnected",
+        "ReadTimeout", "WriteError", "PoolTimeout", "Timed out",
+        "Connection reset", "EOF", "temporarily unavailable",
     )
+    et = err_text or ""
+    return any(s in et for s in signals)
 
-# global client instance + simple use counter so we recycle occasionally
-sb = make_supabase_client()
-_SB_OPS = 0
+
+def pg_select(
+    table: str,
+    select: str,
+    *,
+    filters: Dict[str, str] | None = None,
+    order: str | None = None,
+    desc: bool = False,
+    limit: int | None = None,
+    offset: int | None = None
+) -> List[Dict[str, Any]]:
+    """
+    Generic SELECT from PostgREST.
+    - `filters` must use PostgREST syntax values (e.g., {"account_id": "eq.123"})
+      We assemble the querystring like: ?select=...&account_id=eq.123
+    - `order` becomes 'order=col.asc/desc'
+    - `limit`/`offset` paginate the result
+    Returns a list[dict].
+    """
+    params: Dict[str, Any] = {"select": select}
+    if order:
+        params["order"] = f"{order}.{'desc' if desc else 'asc'}"
+    if limit is not None:
+        params["limit"] = limit
+    if offset is not None:
+        params["offset"] = offset
+    if filters:
+        params.update(filters)
+
+    backoff = 0.5
+    for attempt in range(1, 7):
+        try:
+            r = requests.get(f"{BASE_REST}/{table}", headers=PG_HEADERS_BASE, params=params, timeout=30)
+            if r.status_code in (200, 206):  # 206 = partial content (range)
+                return r.json() or []
+            if r.status_code == 406:  # Not Acceptable can mean "no rows" with certain selects
+                return []
+            r.raise_for_status()
+        except Exception as e:
+            msg = str(e)
+            if attempt == 6 or not _retryable(msg):
+                print(f"[ERROR] pg_select {table}: {msg[:200]}")
+                raise
+            time.sleep(backoff * (1.0 + random.random() * 0.3))
+            backoff = min(backoff * 2, 10.0)
+    return []
+
+
+def pg_select_all(table: str, select: str, *, filters: Dict[str, str] | None = None, order: str | None = None, desc: bool = False, page_size: int = 1000) -> List[Dict[str, Any]]:
+    """Fetch **all** rows by paging with limit/offset until empty."""
+    out: List[Dict[str, Any]] = []
+    offset = 0
+    while True:
+        chunk = pg_select(table, select, filters=filters, order=order, desc=desc, limit=page_size, offset=offset)
+        if not chunk:
+            break
+        out.extend(chunk)
+        if len(chunk) < page_size:
+            break
+        offset += page_size
+    return out
+
+
+def pg_upsert(table: str, row: dict, on_conflict: str = "account_id") -> None:
+    """
+    UPSERT via PostgREST:
+      - POST with Prefer: resolution=merge-duplicates
+      - on_conflict=col_name(s)
+    """
+    params = {"on_conflict": on_conflict}
+    headers = {**PG_HEADERS_BASE, "Prefer": "resolution=merge-duplicates"}
+    backoff = 0.5
+    for attempt in range(1, 7):
+        try:
+            r = requests.post(f"{BASE_REST}/{table}", headers=headers, params=params, json=row, timeout=30)
+            if r.status_code in (200, 201, 204):
+                return
+            r.raise_for_status()
+        except Exception as e:
+            msg = str(e)
+            if attempt == 6 or not _retryable(msg):
+                print(f"[ERROR] pg_upsert {table}: {msg[:200]} | row={str(row)[:180]}")
+                return
+            time.sleep(backoff * (1.0 + random.random() * 0.3))
+            backoff = min(backoff * 2, 10.0)
+
+
+def pg_delete(table: str, filters: Dict[str, str]) -> None:
+    """DELETE rows matching the given PostgREST filters, e.g. {'account_id': 'eq.123'}"""
+    params: Dict[str, str] = {}
+    params.update(filters)
+    backoff = 0.5
+    for attempt in range(1, 7):
+        try:
+            r = requests.delete(f"{BASE_REST}/{table}", headers=PG_HEADERS_BASE, params=params, timeout=30)
+            if r.status_code in (200, 204):
+                return
+            r.raise_for_status()
+        except Exception as e:
+            msg = str(e)
+            if attempt == 6 or not _retryable(msg):
+                print(f"[ERROR] pg_delete {table}: {msg[:200]} | filters={filters}")
+                return
+            time.sleep(backoff * (1.0 + random.random() * 0.3))
+            backoff = min(backoff * 2, 10.0)
+
 
 # -------------------------
 # Time helpers (UTC always)
@@ -74,41 +200,52 @@ def now_iso_utc() -> str:
     return now_utc().isoformat()
 
 def get_monday_noon(dt_local: datetime) -> datetime:
+    """Return the Monday 12:00 for the week containing dt_local."""
     monday = dt_local - timedelta(days=dt_local.weekday())
     return monday.replace(hour=12, minute=0, second=0, microsecond=0)
 
 def need_new_week(baseline_at_dt: Optional[datetime], now_dt: datetime) -> bool:
+    """True if baseline is missing or older than this week's Monday noon."""
     if baseline_at_dt is None:
         return True
     monday_noon = get_monday_noon(now_dt)
     return baseline_at_dt < monday_noon
 
 def next_2h_tick_wallclock(now_dt: datetime) -> datetime:
+    """Round forward to the next 2-hour wallclock (00, 02, 04, ...)."""
     next_hour = ((now_dt.hour // 2) + 1) * 2
     day = now_dt.date()
     if next_hour >= 24:
         next_hour -= 24
         day = day + timedelta(days=1)
+    # Make a tz-aware datetime at the next 2-hour boundary
     return datetime.combine(day, datetime.min.time(), tzinfo=timezone.utc).replace(hour=next_hour)
+
 
 # -------------------------
 # CRM loader with pagination
 # -------------------------
 def fetch_crm_chunk(offset: int, limit: int) -> List[Dict[str, Any]]:
     """
-    Fetch a CRM chunk [offset, offset+limit) with server-side Purchases filter if available.
-    Falls back to client-side filter if needed.
+    Fetch a CRM chunk [offset, offset+limit).
+    Try server-side NOT ILIKE '%purchases%' on CRM_COL_TEMP_NAME; if that fails,
+    fetch unfiltered and filter client-side.
     """
-    cols = f"{CRM_COL_ACCOUNT_ID}, {CRM_COL_CUSTOMER}, {CRM_COL_TEMP_NAME}"
-    q = sb.from_(CRM_TABLE).select(cols).range(offset, offset + limit - 1)
+    cols = f"{CRM_COL_ACCOUNT_ID},{CRM_COL_CUSTOMER},{CRM_COL_TEMP_NAME}"
     try:
-        # server-side "NOT ILIKE '%purchases%'" on temp name
-        data = q.not_.ilike(CRM_COL_TEMP_NAME, "%purchases%").execute().data or []
+        # PostgREST filter syntax: <col>=not.ilike.*purchases*
+        data = pg_select(
+            CRM_TABLE,
+            cols,
+            filters={CRM_COL_TEMP_NAME: "not.ilike.*purchases*"},
+            limit=limit,
+            offset=offset,
+        )
         return data
     except Exception:
-        # fallback: get the range then filter client-side
-        data = q.execute().data or []
+        data = pg_select(CRM_TABLE, cols, limit=limit, offset=offset)
         return [r for r in data if "purchases" not in str(r.get(CRM_COL_TEMP_NAME, "")).lower()]
+
 
 def load_crm_filtered_df(page_size: int = 1000, hard_limit: Optional[int] = None) -> pd.DataFrame:
     """
@@ -135,17 +272,16 @@ def load_crm_filtered_df(page_size: int = 1000, hard_limit: Optional[int] = None
         return pd.DataFrame(columns=[CRM_COL_ACCOUNT_ID, CRM_COL_CUSTOMER, CRM_COL_TEMP_NAME])
 
     df = pd.DataFrame(rows)
-    # normalize missing columns
     for c in [CRM_COL_ACCOUNT_ID, CRM_COL_CUSTOMER, CRM_COL_TEMP_NAME]:
         if c not in df.columns:
             df[c] = None
-    # keep a stable index
     df = df.reset_index(drop=True)
     print(f"[CRM] Loaded {len(df):,} rows after server-side Purchases filter (with pagination).")
     return df
 
+
 # -------------------------
-# Sirix fetch (as per your local script)
+# Sirix fetch
 # -------------------------
 def fetch_sirix_data(user_id: Any) -> Optional[Dict[str, Any]]:
     try:
@@ -205,69 +341,40 @@ def fetch_sirix_data(user_id: Any) -> Optional[Dict[str, Any]]:
         print(f"[!] fetch_sirix_data exception for UserID={user_id}: {e}")
         return None
 
+
 # -------------------------
-# DB helpers
+# DB helpers (table ops)
 # -------------------------
-def upsert_row(table: str, row: dict, on_conflict: str = "account_id"):
-    """
-    Network-hardened upsert:
-      - retries transient network errors with exponential backoff
-      - periodically recycles the HTTP client
-      - logs and SKIPS the row after final failure (keeps the loop alive)
-    """
-    global sb, _SB_OPS
-    _SB_OPS += 1
-    if _SB_OPS % 1000 == 0:
-        try:
-            sb = make_supabase_client()
-            print("[NET] Recycled Supabase HTTP client after 1000 operations.")
-        except Exception as e:
-            print(f"[NET] Client recycle failed (continuing): {e}")
-
-    backoff = 0.5
-    max_attempts = 6
-
-    for attempt in range(1, max_attempts + 1):
-        try:
-            sb.from_(table).upsert(row, on_conflict=on_conflict).execute()
-            return  # success
-        except Exception as e:
-            err = str(e)
-            retryable_signals = (
-                "RemoteProtocolError", "ConnectionResetError", "ServerDisconnected",
-                "ReadTimeout", "WriteError", "PoolTimeout", "Timed out",
-                "Connection reset", "EOF", "temporarily unavailable"
-            )
-            should_retry = any(sig in err for sig in retryable_signals)
-
-            if attempt == max_attempts or not should_retry:
-                # Final failure or non-retryable -> log and SKIP (don’t crash the run)
-                print(f"[ERROR] upsert_row: giving up on table={table}. "
-                      f"attempt={attempt}/{max_attempts}. error={err[:300]}")
-                return
-
-            # Retry path: re-make client + backoff
-            print(f"[WARN] upsert_row failed (attempt {attempt}/{max_attempts}). "
-                  f"Retrying in {backoff:.1f}s … err={err[:160]}")
-            try:
-                sb = make_supabase_client()
-            except Exception as e2:
-                print(f"[WARN] client remake failed (continuing): {e2}")
-            time.sleep(backoff)
-            backoff = min(backoff * 2, 10.0) * (1.0 + random.random() * 0.3)
-
+def upsert_row(table: str, row: dict, on_conflict: str = "account_id") -> None:
+    """UPSERT one row with retry/backoff (via pg_upsert)."""
+    pg_upsert(table, row, on_conflict=on_conflict)
 
 def delete_if_exists(table: str, account_id: str) -> None:
-    sb.from_(table).delete().eq("account_id", account_id).execute()
+    """DELETE by account_id."""
+    pg_delete(table, {"account_id": f"eq.{account_id}"})
 
 def move_exclusive(account_id: str, target_table: str) -> None:
+    """
+    Move an account exclusively into one table:
+      - delete from other destination tables
+      - keep only in target_table
+    """
     others = {TABLE_ACTIVE, TABLE_BLOWN, TABLE_PURCHASES, TABLE_PLAN50K} - {target_table}
     for t in others:
         delete_if_exists(t, account_id)
 
+
 def classify_and_payload(row_from_crm: Dict[str, Any],
                          sirix: Optional[Dict[str, Any]],
                          pct_change: Optional[float]) -> Tuple[str, Dict[str, Any]]:
+    """
+    Decide which table to upsert into + build the payload row.
+    Priority:
+      1) Blown-up (by Sirix MonetaryTransactions)
+      2) Purchases group (by Sirix GroupName)
+      3) Plan = 50000
+      4) Otherwise Active
+    """
     account_id = str(row_from_crm.get(CRM_COL_ACCOUNT_ID))
     payload = {
         "account_id": account_id,
@@ -303,12 +410,13 @@ def classify_and_payload(row_from_crm: Dict[str, Any],
     # 4) Otherwise Active
     return (TABLE_ACTIVE, payload)
 
+
 # -------------------------
 # Baseline helpers (DB)
 # -------------------------
 def get_current_baseline_at() -> Optional[datetime]:
-    res = sb.from_(TABLE_BASELINE).select("baseline_at").order("baseline_at", desc=True).limit(1).execute()
-    rows = res.data or []
+    """Return the most recent baseline_at (as datetime) or None."""
+    rows = pg_select(TABLE_BASELINE, "baseline_at", order="baseline_at", desc=True, limit=1)
     if not rows:
         return None
     try:
@@ -316,9 +424,13 @@ def get_current_baseline_at() -> Optional[datetime]:
     except Exception:
         return None
 
+
 def load_baseline_map() -> Dict[str, float]:
-    res = sb.from_(TABLE_BASELINE).select("account_id, baseline_equity").execute()
-    rows = res.data or []
+    """
+    Load ALL baseline rows -> {account_id: baseline_equity}
+    Uses `pg_select_all` to ensure we don’t stop at 1,000 rows.
+    """
+    rows = pg_select_all(TABLE_BASELINE, "account_id,baseline_equity")
     out: Dict[str, float] = {}
     for r in rows:
         try:
@@ -327,10 +439,18 @@ def load_baseline_map() -> Dict[str, float]:
             pass
     return out
 
+
 # -------------------------
 # Runs with verbose logging
 # -------------------------
 def seed_baseline(now_utc_iso: str) -> None:
+    """
+    Full crawl (for weekly baseline):
+      - Fetch CRM list
+      - Fetch Sirix for each
+      - Classify into tables
+      - For ACTIVE: write baseline (equity, baseline_at)
+    """
     print("[BASELINE] Seeding weekly baseline…")
     df = load_crm_filtered_df()
     total = len(df)
@@ -387,7 +507,15 @@ def seed_baseline(now_utc_iso: str) -> None:
     print(f"Active (final) : {active}")
     print(f"[PROCESS COMPLETE] Run time: {mm:02d}:{ss:02d} (MM:SS)")
 
+
 def run_update() -> None:
+    """
+    Incremental 2h update:
+      - Load baseline map
+      - Re-fetch CRM and Sirix
+      - Compute pct_change for ACTIVE (vs baseline_equity)
+      - Upsert to destination tables
+    """
     print("[UPDATE] Running 2h update…")
     base = load_baseline_map()
 
@@ -454,6 +582,7 @@ def run_update() -> None:
     print(f"Top3 PctChange : {top3 if top3 else '[]'}")
     print(f"[PROCESS COMPLETE] Run time: {mm:02d}:{ss:02d} (MM:SS)")
 
+
 # -------------------------
 # Main scheduler
 # -------------------------
@@ -509,6 +638,7 @@ def main():
             run_update()
 
         next_run = next_2h_tick_wallclock(now_utc())
+
 
 if __name__ == "__main__":
     try:
