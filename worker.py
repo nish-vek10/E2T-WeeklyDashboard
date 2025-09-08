@@ -47,17 +47,18 @@ CRM_COL_TEMP_NAME    = "lv_tempname"
 
 # Supabase client
 def make_supabase_client():
-    # postgrest 0.16.x: no custom http_client arg; set auth + apikey header
-    client = PostgrestClient(f"{SUPABASE_URL}/rest/v1", schema="public")
-    client.auth(SUPABASE_KEY)  # adds Authorization: Bearer <key>
-    client.headers.update({
-        "apikey": SUPABASE_KEY,
-        "Accept-Profile": "public",
-        "Content-Profile": "public",
-    })
-    return client
-
-
+    # Build a PostgrestClient and pass headers up front.
+    # No http_client arg in 0.16.x, and no .headers attribute to mutate later.
+    return PostgrestClient(
+        f"{SUPABASE_URL}/rest/v1",
+        schema="public",
+        headers={
+            "apikey": SUPABASE_KEY,                      # Supabase requires this header
+            "Authorization": f"Bearer {SUPABASE_KEY}",   # Bearer token
+            "Accept-Profile": "public",
+            "Content-Profile": "public",
+        },
+    )
 
 # global client instance + simple use counter so we recycle occasionally
 sb = make_supabase_client()
