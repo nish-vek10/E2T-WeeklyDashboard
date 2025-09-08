@@ -39,6 +39,29 @@ from datetime import datetime, timedelta, timezone
 import random  # jitter for backoff
 
 # -------------------------
+# Netlify build hook helper (optional, controlled by env flags)
+# -------------------------
+def trigger_netlify_build(reason: str):
+    """
+    Ping Netlify Build Hook to trigger a redeploy when our data updates.
+    Safe: completely optional (gated by env vars) and fully wrapped in try/except.
+    """
+    url = os.environ.get("NETLIFY_BUILD_HOOK_URL", "").strip()
+    enabled = os.environ.get("E2T_NOTIFY_NETLIFY", "false").lower() == "true"
+    if not enabled or not url:
+        return
+    try:
+        payload = {"trigger_title": f"E2T worker: {reason} @ {now_iso_utc()}"}
+        r = requests.post(url, json=payload, timeout=10)
+        if 200 <= r.status_code < 300:
+            print(f"[NETLIFY] Build hook OK ({reason}).")
+        else:
+            print(f"[NETLIFY] Build hook non-200 ({r.status_code}) ({reason}).")
+    except Exception as e:
+        print(f"[NETLIFY] Build hook failed ({reason}): {e}")
+
+
+# -------------------------
 # Environment configuration
 # -------------------------
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "").strip()
@@ -515,6 +538,9 @@ def seed_baseline(now_utc_iso: str) -> None:
     print(f"Active (final) : {active}")
     print(f"[PROCESS COMPLETE] Run time: {mm:02d}:{ss:02d} (MM:SS)")
 
+    print(f"[PROCESS COMPLETE] Run time: {mm:02d}:{ss:02d} (MM:SS)")
+    trigger_netlify_build("baseline seeded")
+
 
 def run_update() -> None:
     """
@@ -589,6 +615,9 @@ def run_update() -> None:
     print(f"Active (final) : {active}")
     print(f"Top3 PctChange : {top3 if top3 else '[]'}")
     print(f"[PROCESS COMPLETE] Run time: {mm:02d}:{ss:02d} (MM:SS)")
+
+    print(f"[PROCESS COMPLETE] Run time: {mm:02d}:{ss:02d} (MM:SS)")
+    trigger_netlify_build("2h update")
 
 
 # --------------------------------------------------------------------
