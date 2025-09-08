@@ -2,16 +2,29 @@
 # --------------------------------------------------------------------
 # E2T background worker (Heroku)
 #
-# This version **does not** use the 'postgrest' Python client.
-# It calls Supabase PostgREST directly with `requests`, which keeps
-# everything synchronous and avoids async/coroutine issues.
+# What changed (and why):
+#  1) **No postgrest/httpx**: We call Supabase PostgREST directly with
+#     the `requests` library. This avoids async/coroutine crashes and
+#     the 'Client.headers' confusion from previous versions.
+#  2) **Clear scheduling**:
+#     - Weekly baseline is seeded **at Monday 12:00 (UTC)**.
+#     - If E2T_RUN_NOW=true, we **always** run an immediate `run_update()`
+#       on start (so you see progress right away), even if the baseline
+#       is scheduled for later that day.
+#     - After that, we sleep until the *earliest of*:
+#         next 2-hour tick (00, 02, 04, …)  OR  Monday 12:00 baseline time.
+#     - On each wake: if it’s time to seed the weekly baseline → do it;
+#       otherwise → do a 2h update.
+#  3) Network hardening: all DB calls have retry/backoff.
 #
-# Key points:
-#  - Uses SUPABASE_* env vars for auth
-#  - Provides tiny helpers: pg_select / pg_upsert / pg_delete
-#  - Paginates CRM with limit/offset
-#  - Retries transient network errors with backoff
-#  - Keeps your Sirix API logic & classification unchanged
+# Environment:
+#  SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY (or SUPABASE_ANON_KEY)
+#  CRM_TABLE (defaults to 'lv_tpaccount')
+#  SIRIX_TOKEN (required) and SIRIX_API_URL
+#  E2T_TEST_MODE (false/true)
+#  E2T_RUN_NOW (false/true)  <-- set true to run immediately after boot
+#  E2T_RATE_DELAY_SEC (throttle between Sirix calls)
+#  E2T_TZ_LABEL (string, for logs only; logic runs in UTC)
 # --------------------------------------------------------------------
 
 import os
@@ -23,8 +36,7 @@ import requests
 import pandas as pd
 from typing import Optional, Tuple, Dict, Any, List
 from datetime import datetime, timedelta, timezone
-from collections import Counter
-import random  # for jitter in backoff
+import random  # jitter for backoff
 
 # -------------------------
 # Environment configuration
@@ -42,7 +54,7 @@ PG_HEADERS_BASE = {
     "Authorization": f"Bearer {SUPABASE_KEY}",
     "Accept": "application/json",
     "Content-Type": "application/json",
-    # Optional: specify schema headers (default is public)
+    # Optional: use the public schema unless you configured differently
     "Accept-Profile": "public",
     "Content-Profile": "public",
 }
@@ -70,9 +82,9 @@ CRM_COL_CUSTOMER   = "lv_accountidname"
 CRM_COL_TEMP_NAME  = "lv_tempname"
 
 
-# -------------------------
-# Tiny PostgREST helpers
-# -------------------------
+# --------------------------------------------------------------------
+# PostgREST helpers (requests-based, sync, retry-hardened)
+# --------------------------------------------------------------------
 def _retryable(err_text: str) -> bool:
     """Heuristic: which network-ish errors should we retry?"""
     signals = (
@@ -190,18 +202,18 @@ def pg_delete(table: str, filters: Dict[str, str]) -> None:
             backoff = min(backoff * 2, 10.0)
 
 
-# -------------------------
+# --------------------------------------------------------------------
 # Time helpers (UTC always)
-# -------------------------
+# --------------------------------------------------------------------
 def now_utc() -> datetime:
     return datetime.now(timezone.utc)
 
 def now_iso_utc() -> str:
     return now_utc().isoformat()
 
-def get_monday_noon(dt_local: datetime) -> datetime:
-    """Return the Monday 12:00 for the week containing dt_local."""
-    monday = dt_local - timedelta(days=dt_local.weekday())
+def get_monday_noon(dt_utc: datetime) -> datetime:
+    """Return the Monday 12:00 (UTC) for the week containing dt_utc."""
+    monday = dt_utc - timedelta(days=dt_utc.weekday())
     return monday.replace(hour=12, minute=0, second=0, microsecond=0)
 
 def need_new_week(baseline_at_dt: Optional[datetime], now_dt: datetime) -> bool:
@@ -212,19 +224,18 @@ def need_new_week(baseline_at_dt: Optional[datetime], now_dt: datetime) -> bool:
     return baseline_at_dt < monday_noon
 
 def next_2h_tick_wallclock(now_dt: datetime) -> datetime:
-    """Round forward to the next 2-hour wallclock (00, 02, 04, ...)."""
+    """Round forward to the next 2-hour wallclock (00, 02, 04, ... UTC)."""
     next_hour = ((now_dt.hour // 2) + 1) * 2
     day = now_dt.date()
     if next_hour >= 24:
         next_hour -= 24
         day = day + timedelta(days=1)
-    # Make a tz-aware datetime at the next 2-hour boundary
     return datetime.combine(day, datetime.min.time(), tzinfo=timezone.utc).replace(hour=next_hour)
 
 
-# -------------------------
+# --------------------------------------------------------------------
 # CRM loader with pagination
-# -------------------------
+# --------------------------------------------------------------------
 def fetch_crm_chunk(offset: int, limit: int) -> List[Dict[str, Any]]:
     """
     Fetch a CRM chunk [offset, offset+limit).
@@ -233,7 +244,7 @@ def fetch_crm_chunk(offset: int, limit: int) -> List[Dict[str, Any]]:
     """
     cols = f"{CRM_COL_ACCOUNT_ID},{CRM_COL_CUSTOMER},{CRM_COL_TEMP_NAME}"
     try:
-        # PostgREST filter syntax: <col>=not.ilike.*purchases*
+        # PostgREST filter syntax example: <col>=not.ilike.*purchases*
         data = pg_select(
             CRM_TABLE,
             cols,
@@ -245,7 +256,6 @@ def fetch_crm_chunk(offset: int, limit: int) -> List[Dict[str, Any]]:
     except Exception:
         data = pg_select(CRM_TABLE, cols, limit=limit, offset=offset)
         return [r for r in data if "purchases" not in str(r.get(CRM_COL_TEMP_NAME, "")).lower()]
-
 
 def load_crm_filtered_df(page_size: int = 1000, hard_limit: Optional[int] = None) -> pd.DataFrame:
     """
@@ -280,9 +290,9 @@ def load_crm_filtered_df(page_size: int = 1000, hard_limit: Optional[int] = None
     return df
 
 
-# -------------------------
-# Sirix fetch
-# -------------------------
+# --------------------------------------------------------------------
+# Sirix fetch (unchanged logic)
+# --------------------------------------------------------------------
 def fetch_sirix_data(user_id: Any) -> Optional[Dict[str, Any]]:
     try:
         if user_id is None or (isinstance(user_id, float) and math.isnan(user_id)):
@@ -342,9 +352,9 @@ def fetch_sirix_data(user_id: Any) -> Optional[Dict[str, Any]]:
         return None
 
 
-# -------------------------
+# --------------------------------------------------------------------
 # DB helpers (table ops)
-# -------------------------
+# --------------------------------------------------------------------
 def upsert_row(table: str, row: dict, on_conflict: str = "account_id") -> None:
     """UPSERT one row with retry/backoff (via pg_upsert)."""
     pg_upsert(table, row, on_conflict=on_conflict)
@@ -362,7 +372,6 @@ def move_exclusive(account_id: str, target_table: str) -> None:
     others = {TABLE_ACTIVE, TABLE_BLOWN, TABLE_PURCHASES, TABLE_PLAN50K} - {target_table}
     for t in others:
         delete_if_exists(t, account_id)
-
 
 def classify_and_payload(row_from_crm: Dict[str, Any],
                          sirix: Optional[Dict[str, Any]],
@@ -411,9 +420,9 @@ def classify_and_payload(row_from_crm: Dict[str, Any],
     return (TABLE_ACTIVE, payload)
 
 
-# -------------------------
+# --------------------------------------------------------------------
 # Baseline helpers (DB)
-# -------------------------
+# --------------------------------------------------------------------
 def get_current_baseline_at() -> Optional[datetime]:
     """Return the most recent baseline_at (as datetime) or None."""
     rows = pg_select(TABLE_BASELINE, "baseline_at", order="baseline_at", desc=True, limit=1)
@@ -423,7 +432,6 @@ def get_current_baseline_at() -> Optional[datetime]:
         return datetime.fromisoformat((rows[0]["baseline_at"] or "").replace("Z", "+00:00"))
     except Exception:
         return None
-
 
 def load_baseline_map() -> Dict[str, float]:
     """
@@ -440,9 +448,9 @@ def load_baseline_map() -> Dict[str, float]:
     return out
 
 
-# -------------------------
+# --------------------------------------------------------------------
 # Runs with verbose logging
-# -------------------------
+# --------------------------------------------------------------------
 def seed_baseline(now_utc_iso: str) -> None:
     """
     Full crawl (for weekly baseline):
@@ -583,45 +591,53 @@ def run_update() -> None:
     print(f"[PROCESS COMPLETE] Run time: {mm:02d}:{ss:02d} (MM:SS)")
 
 
-# -------------------------
-# Main scheduler
-# -------------------------
+# --------------------------------------------------------------------
+# Main scheduler (immediate run-now, then earliest-of baseline/2h tick)
+# --------------------------------------------------------------------
 def main():
     print(f"[SERVICE] E2T worker running. TZ={E2T_TZ_LABEL}, TEST_MODE={TEST_MODE}, RUN_NOW_ON_START={RUN_NOW_ON_START}")
 
-    baseline_at = get_current_baseline_at()
-    now_dt = now_utc()
-
+    # TEST mode: seed baseline immediately, then tick every 2h
     if TEST_MODE:
-        if baseline_at is None or need_new_week(baseline_at, now_dt):
-            print("[TEST MODE] Baseline missing/outdated -> seeding now.")
-            seed_baseline(now_iso_utc())
-        next_run = next_2h_tick_wallclock(now_utc())
-    else:
-        if baseline_at is None or need_new_week(baseline_at, now_dt):
-            target = get_monday_noon(now_dt)
-            if now_dt >= target:
-                print("[SCHED] Seeding new weekly baseline now.")
-                seed_baseline(now_iso_utc())
-                next_run = next_2h_tick_wallclock(now_utc())
-            else:
-                secs = (target - now_dt).total_seconds()
-                hh = int(secs // 3600); mm = int((secs % 3600) // 60); ss = int(secs % 60)
-                print(f"[SCHED] Waiting until Monday 12:00 to seed baseline (~{hh}h {mm}m {ss}s).")
-                time.sleep(max(5.0, secs))
-                seed_baseline(now_iso_utc())
-                next_run = next_2h_tick_wallclock(now_utc())
-        else:
-            next_run = next_2h_tick_wallclock(now_utc())
-
-    if RUN_NOW_ON_START:
-        print("[RUN-NOW] Performing one immediate fetch now (then resume 2h schedule).")
-        baseline_at = get_current_baseline_at()
-        if not TEST_MODE and (baseline_at is None or need_new_week(baseline_at, now_utc())):
-            print("[RUN-NOW] Baseline missing/outdated; running update anyway (pct_change may be None).")
+        print("[TEST MODE] Seeding baseline immediately.")
+        seed_baseline(now_iso_utc())
+        print("[TEST MODE] Running immediate update.")
         run_update()
         next_run = next_2h_tick_wallclock(now_utc())
+    else:
+        now_dt = now_utc()
+        baseline_at = get_current_baseline_at()
+        baseline_missing_or_old = need_new_week(baseline_at, now_dt)
+        baseline_due_at = get_monday_noon(now_dt) if baseline_missing_or_old else None
 
+        # --- NEW: honor RUN_NOW_ON_START before any long sleeps ---
+        if RUN_NOW_ON_START:
+            if baseline_missing_or_old and now_dt < baseline_due_at:
+                print(f"[RUN-NOW] Baseline is scheduled for Monday 12:00 UTC ({baseline_due_at.isoformat()}).")
+                print("[RUN-NOW] Running an interim 2h update now so data starts flowing immediately.")
+            else:
+                print("[RUN-NOW] Running an immediate 2h update now.")
+            run_update()
+
+        # Decide the next wake time: earliest of {next 2h tick, baseline_due_at (if in future)}
+        now_dt = now_utc()
+        next_tick = next_2h_tick_wallclock(now_dt)
+        if baseline_missing_or_old and now_dt < baseline_due_at:
+            next_run = min(next_tick, baseline_due_at)
+            wait_secs = int((next_run - now_dt).total_seconds())
+            hh, mm = divmod(wait_secs // 60, 60)
+            ss = wait_secs % 60
+            label = "baseline time" if next_run == baseline_due_at else "2h tick"
+            print(f"[SCHED] Sleeping until {label} at {next_run.isoformat()} (~{hh}h {mm}m {ss}s).")
+        else:
+            # Either baseline is due NOW (>= Monday noon), or not missing/outdated
+            if baseline_missing_or_old and now_dt >= baseline_due_at:
+                print("[SCHED] Monday 12:00 UTC reached. Seeding weekly baseline now.")
+                seed_baseline(now_iso_utc())
+            next_run = next_2h_tick_wallclock(now_utc())
+            print(f"[SCHED] Next 2h update at {next_run.isoformat()}.")
+
+    # Main loop: on each wake, seed weekly baseline if due, else run update.
     while True:
         now_dt = now_utc()
         if next_run > now_dt:
@@ -630,14 +646,28 @@ def main():
             print(f"[SCHED] Next run at {next_run.isoformat()} (in {hh:02d}:{mm:02d}:{ss:02d}).")
             time.sleep(secs)
 
+        # On wake: seed baseline if Monday noon passed and baseline is missing/outdated
+        now_dt = now_utc()
         baseline_at = get_current_baseline_at()
-        if baseline_at is None or need_new_week(baseline_at, now_utc()):
-            print("[SCHED] Baseline missing/outdated on wake; switching to baseline seeding.")
-            seed_baseline(now_iso_utc())
+        if need_new_week(baseline_at, now_dt):
+            due = get_monday_noon(now_dt)
+            if now_dt >= due:
+                print("[SCHED] Weekly baseline due → seeding now.")
+                seed_baseline(now_iso_utc())
+            else:
+                print(f"[SCHED] Weekly baseline scheduled at {due.isoformat()} (not yet reached). Running update instead.")
+                run_update()
         else:
             run_update()
 
-        next_run = next_2h_tick_wallclock(now_utc())
+        # After work: plan next wake = earliest of next 2h tick or next baseline due (if earlier)
+        now_dt = now_utc()
+        next_tick = next_2h_tick_wallclock(now_dt)
+        due = get_monday_noon(now_dt)
+        if need_new_week(get_current_baseline_at(), now_dt) and now_dt < due:
+            next_run = min(next_tick, due)
+        else:
+            next_run = next_tick
 
 
 if __name__ == "__main__":
