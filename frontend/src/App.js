@@ -355,9 +355,9 @@ export default function App() {
         </div>
       </div>
 
-      <div style={{ display: "flex", gap: 18, alignItems: "flex-start", ...centerWrap }}>
+      <div className="res-row" style={{ gap: 18, alignItems: "flex-start", ...centerWrap }}>
         {/* PRIZES */}
-        <div style={{ flex: "0 0 260px" }}>
+        <div className="panel panel-prizes" style={{ flex: "0 0 260px" }}>
           <table
             style={{
               width: "100%",
@@ -425,8 +425,51 @@ export default function App() {
         </div>
 
         {/* LEADERBOARD */}
-        <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={{ overflowX: "auto", maxHeight: "70vh", overflowY: "auto" }}>
+        <div className="panel panel-leaderboard" style={{ flex: 1, minWidth: 0 }}>
+            {/* MOBILE cards (phones) */}
+            {false && (
+              <ul className="list mobile-only" style={{ marginBottom: 12 }}>
+              {rowsToRender.length === 0 ? (
+                <li className="row" style={{ color: "#999" }}>No records found.</li>
+              ) : (
+                rowsToRender.map((row, rowIndex) => {
+                  const id = String(row["account_id"] ?? "");
+                  const globalRank = globalRankById[id];
+                  const displayRank = (globalRank >= 0 && Number.isInteger(globalRank)) ? globalRank + 1 : (rowIndex + 1);
+
+                  const n = numVal(row["pct_change"]);
+                  const pctColor = n == null ? "#eaeaea" : (n > 0 ? "#34c759" : (n < 0 ? "#ff453a" : "#eaeaea"));
+
+                  return (
+                    <li key={id || rowIndex} className="row">
+                      <div className="line">
+                        <span className="label">Rank</span>
+                        <span style={{ fontWeight: 800 }}>
+                          {rankBadge(globalRank) || displayRank}
+                        </span>
+                      </div>
+                      <div className="line">
+                        <span className="label">Name</span>
+                        <span>{shortName(row["customer_name"])}</span>
+                      </div>
+                      <div className="line">
+                        <span className="label">Net %</span>
+                        <span style={{ color: pctColor, fontWeight: 800 }}>{fmtPct(n)}</span>
+                      </div>
+                      <div className="line">
+                        <span className="label">Capital ($)</span>
+                        <span>{fmtNumber(row["plan"], 0)}</span>
+                      </div>
+                      <div className="line">
+                        <span className="label">Country</span>
+                        <span>{getFlagOnly(row["country"])}</span>
+                      </div>
+                    </li>
+                  );
+                })
+              )}
+            </ul>
+          <div className="table-wrap" style={{ overflowX: "auto", maxHeight: "70vh", overflowY: "auto" }}>
             <table
               border="1"
               cellPadding="5"
@@ -514,7 +557,7 @@ export default function App() {
         </div>
 
         {/* COUNTDOWN */}
-        <div style={{ flex: "0 0 260px" }}>
+        <div className="panel panel-countdown" style={{ flex: "0 0 260px" }}>
           <table
             style={{
               width: "100%",

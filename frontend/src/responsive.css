@@ -1,0 +1,134 @@
+/* ==== Responsive base (phones first) ==== */
+:root{
+  --gap: 12px;            /* phone gap */
+  --pad: 16px;            /* phone page padding */
+  --card-radius: 14px;
+  --muted: #6b7280;
+}
+
+/* breakpoints */
+@media (min-width: 768px){ :root{ --gap:16px; --pad:24px; } }
+@media (min-width:1024px){ :root{ --gap:24px; --pad:32px; } }
+
+/* containers & grids */
+.container{ margin:0 auto; padding-inline: var(--pad); max-width:1280px; }
+.grid{ display:grid; gap:var(--gap); }
+.kpis{ display:grid; grid-template-columns: 1fr; gap:var(--gap); }
+@media (min-width:480px){ .kpis{ grid-template-columns: 1fr 1fr; } }
+@media (min-width:1024px){ .kpis{ grid-template-columns: repeat(4, 1fr); } }
+
+.card{ border:1px solid #e5e7eb; border-radius: var(--card-radius); padding:12px; }
+.card h2{ margin:0 0 4px; font-size:12px; color:var(--muted); }
+.card .value{ font-size: clamp(20px, 2.3vw, 28px); font-weight:600; }
+
+/* mobile vs desktop visibility */
+.mobile-only{ display:block; }
+.desktop-only{ display:none; }
+@media (min-width:768px){
+  .mobile-only{ display:none !important; }
+  .desktop-only{ display:revert; }
+}
+
+/* table patterns */
+.table-wrap{ overflow-x:auto; -webkit-overflow-scrolling: touch; }
+.table{ width:100%; min-width:720px; border-collapse: collapse; font-size:14px; }
+.table th, .table td{ padding:10px 12px; border-bottom:1px solid #eee; text-align:left; }
+
+/* cardified list (phone replacement for tables) */
+.list{ display:grid; gap:var(--gap); }
+.list .row{ border:1px solid #e5e7eb; border-radius: var(--card-radius); padding:12px; }
+.row .line{ display:flex; justify-content:space-between; align-items:center; margin:4px 0; }
+.row .label{ font-size:12px; color:var(--muted); }
+
+/* charts */
+.chart{ width:100%; aspect-ratio: 16 / 10; }
+
+/* tap targets & safe areas */
+button, .btn, a{ min-height:44px; }
+.safe-bottom{ padding-bottom: env(safe-area-inset-bottom); }
+
+/* phone preview override */
+.force-mobile .desktop-only{ display:none !important; }
+.force-mobile .mobile-only{ display:block !important; }
+.force-mobile .kpis{ grid-template-columns:1fr !important; }
+
+/* stack the 3 columns vertically on phones */
+.res-row { display: flex; gap: 18px; align-items: flex-start; }
+@media (max-width: 767px){
+  .res-row { flex-direction: column; }
+}
+
+/* ===== Phone layout: PRIZES + COUNTDOWN side-by-side, LEADERBOARD below ===== */
+@media (max-width: 767px){
+  .res-row { display:flex; flex-wrap: wrap; }              /* allow wrapping */
+  .panel-prizes     { order: 1; flex: 0 0 50%; max-width: 50%; }
+  .panel-countdown  { order: 2; flex: 0 0 50%; max-width: 50%; }
+  .panel-leaderboard{ order: 3; flex: 0 0 100%; max-width: 100%; }
+}
+
+/* When phone preview is forced with ?viewport=mobile, apply the same rules on desktop */
+.force-mobile .res-row { display:flex; flex-wrap: wrap; }
+.force-mobile .panel-prizes     { order: 1; flex: 0 0 50%; max-width: 50%; }
+.force-mobile .panel-countdown  { order: 2; flex: 0 0 50%; max-width: 50%; }
+.force-mobile .panel-leaderboard{ order: 3; flex: 0 0 100%; max-width: 100%; }
+
+/* --- Phone two-up header + leaderboard below --- */
+.res-row { display: flex; gap: 18px; align-items: flex-start; flex-wrap: wrap; }
+
+/* Real phones (screen ≤ 767px) */
+@media (max-width: 767px){
+  .panel-prizes{ order:1; flex:0 0 50% !important; max-width:50% !important; }
+  .panel-countdown{ order:2; flex:0 0 50% !important; max-width:50% !important; }
+  .panel-leaderboard{ order:3; flex:0 0 100% !important; max-width:100% !important; }
+
+  /* ensure desktop table is hidden on phones */
+  .desktop-only{ display:none !important; }
+  .mobile-only{ display:block !important; }
+}
+
+/* Forced phone preview (?viewport=mobile) — apply same rules even on a wide desktop */
+.force-mobile .panel-prizes{ order:1; flex:0 0 50% !important; max-width:50% !important; }
+.force-mobile .panel-countdown{ order:2; flex:0 0 50% !important; max-width:50% !important; }
+.force-mobile .panel-leaderboard{ order:3; flex:0 0 100% !important; max-width:100% !important; }
+
+.force-mobile .desktop-only{ display:none !important; }
+.force-mobile .mobile-only{ display:block !important; }
+
+/* ===== Grid layout to control panels reliably ===== */
+.res-row { display: grid; gap: 18px; align-items: start; }
+
+/* Name the three panels */
+.panel-prizes     { grid-area: prizes; }
+.panel-leaderboard{ grid-area: leaderboard; }
+.panel-countdown  { grid-area: countdown; }
+
+/* Desktop (>=1024px): keep your current 3-column layout */
+@media (min-width: 1024px){
+  .res-row{
+    grid-template-columns: 260px 1fr 260px;
+    grid-template-areas: 'prizes leaderboard countdown';
+  }
+}
+
+/* Phones (<=767px): PRIZES + COUNTDOWN side-by-side, LEADERBOARD below */
+@media (max-width: 767px){
+  .res-row{
+    grid-template-columns: 1fr 1fr;
+    grid-template-areas:
+      'prizes countdown'
+      'leaderboard leaderboard';
+  }
+  /* Hide big table, show mobile cards */
+  .desktop-only{ display: none !important; }
+  .mobile-only{ display: block !important; }
+}
+
+/* Forced phone preview (?viewport=mobile): same as phones even on wide screens */
+.force-mobile .res-row{
+  grid-template-columns: 1fr 1fr;
+  grid-template-areas:
+    'prizes countdown'
+    'leaderboard leaderboard';
+}
+.force-mobile .desktop-only{ display: none !important; }
+.force-mobile .mobile-only{ display: block !important; }

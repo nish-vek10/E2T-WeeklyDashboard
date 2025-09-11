@@ -1,14 +1,25 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" class="force-mobile">
   <head>
     <meta charset="utf-8" />
     <link rel="icon" href="%PUBLIC_URL%/favicon.ico" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <script>
+      (function () {
+        try {
+          var qp = new URLSearchParams(window.location.search);
+          if (qp.get('viewport') === 'mobile') {
+            document.documentElement.classList.add('force-mobile');
+          }
+        } catch (e) {}
+      })();
+    </script>
     <title>E2T Weekly Leaderboard</title>
 
     <!-- Switzer font (Fontshare) -->
     <link href="https://api.fontshare.com/v2/css?f[]=switzer@400,500,600,700,800,900&display=swap" rel="stylesheet">
   </head>
+  <script src="%PUBLIC_URL%/previewToggle.js" defer></script>
   <body>
     <noscript>You need to enable JavaScript to run this app.</noscript>
     <div id="root"></div>
