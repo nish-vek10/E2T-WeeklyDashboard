@@ -2,6 +2,20 @@
 import React, { useEffect, useState, useMemo } from "react";
 import "./App.css";
 
+// --- Phone detector (≤ 767px) ---
+function useIsPhone() {
+  const [isPhone, setIsPhone] = useState(
+    typeof window !== "undefined" ? window.innerWidth <= 767 : false
+  );
+  useEffect(() => {
+    const onResize = () => setIsPhone(window.innerWidth <= 767);
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
+  return isPhone;
+}
+
+
 // Supabase REST (read-only)
 const SUPABASE_URL  = process.env.REACT_APP_SUPABASE_URL;
 const SUPABASE_ANON = process.env.REACT_APP_SUPABASE_ANON_KEY;
@@ -163,6 +177,8 @@ function msUntilNextEvenHour30(now = new Date()) {
 }
 
 export default function App() {
+  const isPhone = typeof window !== "undefined" && window.innerWidth <= 767;
+  console.log('isPhone?', isPhone); // (optional) to verify in the console
   const [originalData, setOriginalData] = useState([]);
   const [data, setData] = useState([]);
   const [searchQuery, setSearchQuery] = useState("");
@@ -329,7 +345,7 @@ export default function App() {
           animation: "gradientShift 6s ease-in-out infinite"
         }}
       >
-        E2T WORLD CUP COMPETITION
+        E2T WORLD CUP COMPETITION --
       </h1>
 
       <div style={{ ...centerWrap }}>
@@ -355,74 +371,86 @@ export default function App() {
         </div>
       </div>
 
-      <div className="res-row" style={{ gap: 18, alignItems: "flex-start", ...centerWrap }}>
-        {/* PRIZES */}
-        <div className="panel panel-prizes" style={{ flex: "0 0 260px" }}>
-          <table
-            style={{
-              width: "100%",
-              borderCollapse: "collapse",
-              fontSize: 13,
-              background: "#121212",
-              boxShadow: "0 1px 6px rgba(0,0,0,0.6)",
-              borderRadius: 8,
-              overflow: "hidden",
-              color: "#eaeaea"
-            }}
-          >
-            <thead style={gradientTheadStyle}>
-              <tr>
-                <th style={{ padding: "10px 8px", fontWeight: 900, textAlign: "left", fontSize: 14 }}>PRIZES</th>
-                <th style={{ padding: "10px 8px", fontWeight: 900, textAlign: "right", fontSize: 14 }}>Amount</th>
-              </tr>
-            </thead>
-            <tbody>
-              {visibleForPrizes.length === 0 && (
-                <tr><td colSpan={2} style={{ padding: 10, color: "#999" }}>No data</td></tr>
-              )}
-              {visibleForPrizes.map((row, idx) => {
-                const globalRank = idx;
-                const zebra = { background: idx % 2 === 0 ? "#121212" : "#0f0f0f" };
-                const highlight = rowStyleForRank(globalRank);
-                const rowStyle = { ...zebra, ...highlight };
-                const prize = prizeMap[globalRank + 1] || "";
+      <div
+        className="res-row"
+        style={{
+          display: isPhone ? "block" : "flex",  // stack on phones, row on desktop
+          gap: 18,
+          alignItems: "flex-start",
+          ...centerWrap
+        }}
+      >
 
-                const rh = rowHeightForRank(globalRank);
-                let fs = "13px", fw = 500;
-                if (globalRank === 0) { fs = "15px"; fw = 800; }
-                else if (globalRank === 1) { fs = "14px"; fw = 700; }
-                else if (globalRank === 2) { fs = "13.5px"; fw = 600; }
 
-                return (
-                  <tr key={idx} style={rowStyle}>
-                    <td style={{
-                      height: rh,
-                      lineHeight: rh + "px",
-                      padding: 0,
-                      fontWeight: 800,
-                      borderLeft: `6px solid ${accentForRank(globalRank)}`
-                    }}>
-                      {rankBadge(globalRank) || (globalRank + 1)}
-                    </td>
-                    <td style={{
-                      height: rh,
-                      lineHeight: rh + "px",
-                      padding: 0,
-                      fontSize: fs,
-                      fontWeight: fw,
-                      textAlign: "right",
-                      whiteSpace: "nowrap",
-                      overflow: "hidden",
-                      textOverflow: "ellipsis"
-                    }}>
-                      {prize}
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
+      {/* PRIZES */}
+        {isPhone ? null : (
+          <div className="panel panel-prizes" style={{ flex: "0 0 260px" }}>
+            <table
+              style={{
+                width: "100%",
+                borderCollapse: "collapse",
+                fontSize: 13,
+                background: "#121212",
+                boxShadow: "0 1px 6px rgba(0,0,0,0.6)",
+                borderRadius: 8,
+                overflow: "hidden",
+                color: "#eaeaea"
+              }}
+            >
+              <thead style={gradientTheadStyle}>
+                <tr>
+                  <th style={{ padding: "10px 8px", fontWeight: 900, textAlign: "left", fontSize: 14 }}>PRIZES</th>
+                  <th style={{ padding: "10px 8px", fontWeight: 900, textAlign: "right", fontSize: 14 }}>Amount</th>
+                </tr>
+              </thead>
+              <tbody>
+                {visibleForPrizes.length === 0 && (
+                  <tr><td colSpan={2} style={{ padding: 10, color: "#999" }}>No data</td></tr>
+                )}
+                {visibleForPrizes.map((row, idx) => {
+                  const globalRank = idx;
+                  const zebra = { background: idx % 2 === 0 ? "#121212" : "#0f0f0f" };
+                  const highlight = rowStyleForRank(globalRank);
+                  const rowStyle = { ...zebra, ...highlight };
+                  const prize = prizeMap[globalRank + 1] || "";
+
+                  const rh = rowHeightForRank(globalRank);
+                  let fs = "13px", fw = 500;
+                  if (globalRank === 0) { fs = "15px"; fw = 800; }
+                  else if (globalRank === 1) { fs = "14px"; fw = 700; }
+                  else if (globalRank === 2) { fs = "13.5px"; fw = 600; }
+
+                  return (
+                    <tr key={idx} style={rowStyle}>
+                      <td style={{
+                        height: rh,
+                        lineHeight: rh + "px",
+                        padding: 0,
+                        fontWeight: 800,
+                        borderLeft: `6px solid ${accentForRank(globalRank)}`
+                      }}>
+                        {rankBadge(globalRank) || (globalRank + 1)}
+                      </td>
+                      <td style={{
+                        height: rh,
+                        lineHeight: rh + "px",
+                        padding: 0,
+                        fontSize: fs,
+                        fontWeight: fw,
+                        textAlign: "right",
+                        whiteSpace: "nowrap",
+                        overflow: "hidden",
+                        textOverflow: "ellipsis"
+                      }}>
+                        {prize}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
 
         {/* LEADERBOARD */}
         <div className="panel panel-leaderboard" style={{ flex: 1, minWidth: 0 }}>
