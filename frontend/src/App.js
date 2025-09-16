@@ -1,6 +1,11 @@
 // frontend/src/App.js
 import React, { useEffect, useState, useMemo } from "react";
 import "./App.css";
+import countries from "i18n-iso-countries";
+import enLocale from "i18n-iso-countries/langs/en.json";
+
+countries.registerLocale(enLocale);
+
 
 // --- Phone detector (≤ 767px) ---
 function useIsPhone() {
@@ -92,27 +97,99 @@ function getLondonTZAbbrev(d = new Date()) {
   }
 }
 
-// flags
+// Robust country-name → ISO alpha-2 resolver
+const COUNTRY_ALIASES = {
+  "uk": "United Kingdom",
+  "u.k.": "United Kingdom",
+  "gb": "United Kingdom",
+  "great britain": "United Kingdom",
+  "britain": "United Kingdom",
+  "uae": "United Arab Emirates",
+  "u.a.e.": "United Arab Emirates",
+  "usa": "United States of America",
+  "u.s.a.": "United States of America",
+  "united states": "United States of America",
+  "us": "United States of America",
+  "russia": "Russian Federation",
+  "kyrgyzstan": "Kyrgyz Republic",
+  "czech republic": "Czechia",
+  "ivory coast": "Côte d'Ivoire",
+  "cote d'ivoire": "Côte d'Ivoire",
+  "côte d'ivoire": "Côte d'Ivoire",
+  "dr congo": "Congo, Democratic Republic of the",
+  "democratic republic of the congo": "Congo, Democratic Republic of the",
+  "republic of the congo": "Congo",
+  "swaziland": "Eswatini",
+  "cape verde": "Cabo Verde",
+  "palestine": "Palestine, State of",
+  "iran": "Iran, Islamic Republic of",
+  "syria": "Syrian Arab Republic",
+  "moldova": "Moldova, Republic of",
+  "venezuela": "Venezuela, Bolivarian Republic of",
+  "bolivia": "Bolivia, Plurinational State of",
+  "laos": "Lao People's Democratic Republic",
+  "brunei": "Brunei Darussalam",
+  "vietnam": "Viet Nam",
+  "south korea": "Korea, Republic of",
+  "north korea": "Korea, Democratic People's Republic of",
+  "macau": "Macao",
+  "hong kong": "Hong Kong",
+  "myanmar": "Myanmar",
+  "burma": "Myanmar",
+  "north macedonia": "North Macedonia",
+  "são tomé and príncipe": "Sao Tome and Principe",
+  "sao tome and principe": "Sao Tome and Principe",
+  "micronesia": "Micronesia, Federated States of",
+  "st kitts and nevis": "Saint Kitts and Nevis",
+  "saint kitts and nevis": "Saint Kitts and Nevis",
+  "st lucia": "Saint Lucia",
+  "saint lucia": "Saint Lucia",
+  "st vincent and the grenadines": "Saint Vincent and the Grenadines",
+  "saint vincent and the grenadines": "Saint Vincent and the Grenadines",
+  "antigua": "Antigua and Barbuda",
+  "bahamas": "Bahamas",
+  "gambia": "Gambia",
+  "bahrein": "Bahrain",
+  "netherlands the": "Netherlands",
+  "republic of ireland": "Ireland",
+  "eswatini": "Eswatini",
+  "kosovo": "Kosovo"
+};
+
+function resolveCountryAlpha2(rawName) {
+  if (!rawName) return null;
+  const raw = String(rawName).trim();
+  if (!raw) return null;
+
+  // direct lookup
+  let code = countries.getAlpha2Code(raw, "en");
+
+  // alias lookup
+  if (!code) {
+    const alias = COUNTRY_ALIASES[raw.toLowerCase()];
+    if (alias) code = countries.getAlpha2Code(alias, "en") || (alias.toLowerCase() === "kosovo" ? "XK" : null);
+  }
+
+  // punctuation/spacing cleanup & retry
+  if (!code) {
+    const cleaned = raw.replace(/[().]/g, "").replace(/\s+/g, " ").trim();
+    code = countries.getAlpha2Code(cleaned, "en");
+  }
+
+  // Normalize + lower-case for FlagCDN
+  return code ? code.toLowerCase() : null;
+}
+
+
 function getFlagOnly(countryName) {
-  const countryMap = {
-    "Albania": "al","Australia": "au","Bahrain": "bh","Bangladesh": "bd","Benin": "bj",
-    "Botswana": "bw","Burkina Faso": "bf","Burundi": "bi","Cameroon": "cm","Canada": "ca",
-    "Colombia": "co","Cote D'Ivoire": "ci","Cyprus": "cy","Egypt": "eg","Ethiopia": "et",
-    "France": "fr","Germany": "de","Ghana": "gh","India": "in","Ireland": "ie",
-    "Israel": "il","Jordan": "jo","Kenya": "ke","Lesotho": "ls","Malaysia": "my",
-    "Malta": "mt","Nepal": "np","Netherlands": "nl","Nigeria": "ng","Pakistan": "pk",
-    "Saudi Arabia": "sa","Senegal": "sn","Singapore": "sg","Somalia": "so",
-    "South Africa": "za","Spain": "es","Swaziland": "sz","Tanzania": "tz","Uganda": "ug",
-    "United Arab Emirates": "ae","United Kingdom": "gb","Uzbekistan": "uz","Zambia": "zm",
-    "Zimbabwe": "zw"
-  };
-  const code = countryMap[countryName];
+  const code = resolveCountryAlpha2(countryName);
   if (!code) return countryName || "";
   return (
     <img
-      src={'https://flagcdn.com/w40/' + code + '.png'}
+      src={`https://flagcdn.com/w40/${code}.png`}
       title={countryName || ""}
       alt={countryName || ""}
+      loading="lazy"
       style={{
         width: "38px",
         height: "28px",
@@ -120,9 +197,15 @@ function getFlagOnly(countryName) {
         borderRadius: "3px",
         boxShadow: "0 0 3px rgba(0,0,0,0.6)"
       }}
+      onError={(e) => {
+        // If some edge-case code 404s, gracefully fall back to text
+        e.currentTarget.style.display = "none";
+        e.currentTarget.insertAdjacentText("afterend", countryName || "");
+      }}
     />
   );
 }
+
 
 function shortName(full) {
   if (!full) return "";
