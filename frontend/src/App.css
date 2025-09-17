@@ -3,3 +3,77 @@
 html, body, #root { height: 100%; }
 table { width: 100%; }
 th, td { border: none; }
+
+/* ====== Mobile-only layout helpers ====== */
+.mobileOnly { display: none; }
+.desktopOnly { display: block; }
+
+/* ====== Desktop / Tablet layout ====== */
+/* Parent row layout + spacing */
+.layout-3col {
+  display: flex;
+  align-items: flex-start;
+  gap: 18px;                 /* horizontal on desktop, vertical once stacked */
+}
+
+/* Make sure children don’t add their own margins */
+.layout-3col > * { margin: 0; }
+
+/* (optional safety) tables have no margins */
+.col-prizes table,
+.col-countdown table,
+.col-leaderboard table { margin: 0; }
+
+/* --- CRUCIAL: desktop column sizing --- */
+.col-prizes,
+.col-countdown { flex: 0 0 260px; }   /* fixed side columns */
+
+.col-leaderboard {
+  flex: 1 1 auto;                      /* main column grows */
+  min-width: 0;                        /* allow table to shrink without overflow */
+}
+
+/* Consistent horizontal sizing + no overflow on small screens */
+@media (max-width: 768px) {
+  .mobileOnly { display: block; }
+  .desktopOnly { display: none; }
+
+  /* stack the 3 columns and use a consistent vertical gap */
+  .layout-3col {
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  /* --- CRUCIAL: remove fixed 260px basis in column layout --- */
+  .col-prizes,
+  .col-countdown,
+  .col-leaderboard {
+    flex: 0 0 auto;   /* collapses height to content, no ghost space */
+    width: 100%;
+  }
+
+  .col-leaderboard { order: 1; }
+  .col-countdown  { order: 2; }
+  .col-prizes     { order: 3; }
+
+  /* prevent sideways scrolling for the smaller tables */
+  .col-prizes table,
+  .col-countdown table {
+    table-layout: fixed;
+  }
+
+  /* Gentle font-size reductions for phones */
+  h1 {
+    font-size: 1.6rem !important;
+    line-height: 1.2 !important;
+    margin-bottom: 12px !important;
+  }
+
+  /* search input */
+  input[type="text"] {
+    width: 100% !important;
+    max-width: 520px;
+    font-size: 13px !important;
+    padding: 9px 12px !important;
+  }
+}

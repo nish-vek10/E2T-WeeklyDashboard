@@ -1,25 +1,10 @@
 // frontend/src/App.js
-import React, { useEffect, useState, useMemo } from "react";
+import React, { useEffect, useState, useMemo, useLayoutEffect, useRef } from "react";
 import "./App.css";
 import countries from "i18n-iso-countries";
 import enLocale from "i18n-iso-countries/langs/en.json";
 
 countries.registerLocale(enLocale);
-
-
-// --- Phone detector (≤ 767px) ---
-function useIsPhone() {
-  const [isPhone, setIsPhone] = useState(
-    typeof window !== "undefined" ? window.innerWidth <= 767 : false
-  );
-  useEffect(() => {
-    const onResize = () => setIsPhone(window.innerWidth <= 767);
-    window.addEventListener("resize", onResize);
-    return () => window.removeEventListener("resize", onResize);
-  }, []);
-  return isPhone;
-}
-
 
 // Supabase REST (read-only)
 const SUPABASE_URL  = process.env.REACT_APP_SUPABASE_URL;
@@ -97,7 +82,8 @@ function getLondonTZAbbrev(d = new Date()) {
   }
 }
 
-// Robust country-name → ISO alpha-2 resolver
+// flags
+// --- Flag helpers (robust country-name → ISO alpha-2) ---
 const COUNTRY_ALIASES = {
   "uk": "United Kingdom",
   "u.k.": "United Kingdom",
@@ -134,8 +120,8 @@ const COUNTRY_ALIASES = {
   "north korea": "Korea, Democratic People's Republic of",
   "macau": "Macao",
   "hong kong": "Hong Kong",
-  "myanmar": "Myanmar",
   "burma": "Myanmar",
+  "myanmar": "Myanmar",
   "north macedonia": "North Macedonia",
   "são tomé and príncipe": "Sao Tome and Principe",
   "sao tome and principe": "Sao Tome and Principe",
@@ -167,7 +153,9 @@ function resolveCountryAlpha2(rawName) {
   // alias lookup
   if (!code) {
     const alias = COUNTRY_ALIASES[raw.toLowerCase()];
-    if (alias) code = countries.getAlpha2Code(alias, "en") || (alias.toLowerCase() === "kosovo" ? "XK" : null);
+    if (alias) {
+      code = countries.getAlpha2Code(alias, "en") || (alias.toLowerCase() === "kosovo" ? "XK" : null);
+    }
   }
 
   // punctuation/spacing cleanup & retry
@@ -176,10 +164,8 @@ function resolveCountryAlpha2(rawName) {
     code = countries.getAlpha2Code(cleaned, "en");
   }
 
-  // Normalize + lower-case for FlagCDN
   return code ? code.toLowerCase() : null;
 }
-
 
 function getFlagOnly(countryName) {
   const code = resolveCountryAlpha2(countryName);
@@ -198,14 +184,13 @@ function getFlagOnly(countryName) {
         boxShadow: "0 0 3px rgba(0,0,0,0.6)"
       }}
       onError={(e) => {
-        // If some edge-case code 404s, gracefully fall back to text
+        // Graceful fallback if some edge-case 404s
         e.currentTarget.style.display = "none";
         e.currentTarget.insertAdjacentText("afterend", countryName || "");
       }}
     />
   );
 }
-
 
 function shortName(full) {
   if (!full) return "";
@@ -259,9 +244,141 @@ function msUntilNextEvenHour30(now = new Date()) {
   return cand - now;
 }
 
+// ===== Mobile Leaderboard Cards (phone-only UI) =====
+function MobileLeaderboardCards({ rows, rowsTop30, globalRankById }) {
+  const list = rows && rows.length ? rows : rowsTop30;
+
+  return (
+    <div role="list" style={{ display: "grid", gap: 10 }}>
+      {list.map((row, idx) => {
+        const id = String(row.account_id ?? "");
+        const globalRank = globalRankById[id];
+        const displayRank =
+          globalRank >= 0 && Number.isInteger(globalRank) ? globalRank + 1 : "";
+
+        const n = numVal(row.pct_change);
+        const pctColor =
+          n == null ? "#eaeaea" : n > 0 ? "#34c759" : n < 0 ? "#ff453a" : "#eaeaea";
+
+        /* top-3 subtle highlight */
+        const bg =
+          globalRank === 0
+            ? "linear-gradient(135deg,#1a1505 0%,#161616 100%)"
+            : globalRank === 1
+            ? "linear-gradient(135deg,#0f1420 0%,#161616 100%)"
+            : globalRank === 2
+            ? "linear-gradient(135deg,#0f1a12 0%,#161616 100%)"
+            : "#181818";
+
+        return (
+          <div
+            key={id || idx}
+            role="listitem"
+            style={{
+              background: bg,
+              border: "1px solid #2a2a2a",
+              borderRadius: 12,
+              padding: 12,
+              display: "grid",
+              gap: 8,
+            }}
+          >
+            {/* Row 1: rank + name + country flag */}
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <div
+                style={{
+                  minWidth: 32,
+                  height: 32,
+                  borderRadius: 8,
+                  background: "#101010",
+                  border:
+                    globalRank <= 2 ? "1px solid rgba(212,175,55,0.35)" : "1px solid #222",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  fontWeight: 800,
+                  color: globalRank <= 2 ? "#d4af37" : "#eaeaea",
+                }}
+                aria-label={`Rank ${displayRank}`}
+              >
+                {rankBadge(globalRank) || displayRank}
+              </div>
+
+              <div
+                style={{
+                  fontWeight: 700,
+                  fontSize: 14,
+                  color: "#f2f2f2",
+                  flex: 1,
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                  whiteSpace: "nowrap",
+                }}
+                title={row.customer_name}
+              >
+                {shortName(row.customer_name)}
+              </div>
+
+              <div>{getFlagOnly(row.country)}</div>
+            </div>
+
+            {/* Row 2: Net % + Capital */}
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: "1fr auto",
+                alignItems: "center",
+                gap: 10,
+              }}
+            >
+              <div
+                style={{
+                  display: "flex",
+                  gap: 8,
+                  flexWrap: "wrap",
+                  alignItems: "center",
+                  fontSize: 12.5,
+                }}
+              >
+                <span
+                  style={{
+                    background: "#101010",
+                    border: "1px solid #2a2a2a",
+                    borderRadius: 8,
+                    padding: "4px 8px",
+                  }}
+                >
+                  <span style={{ opacity: 0.65, marginRight: 6 }}>Capital</span>
+                  <strong style={{ color: "#eaeaea" }}>{fmtNumber(row.plan, 0)}</strong>
+                </span>
+              </div>
+
+              <span
+                style={{
+                  justifySelf: "end",
+                  background: "#101010",
+                  border: "1px solid #2a2a2a",
+                  borderRadius: 999,
+                  padding: "6px 10px",
+                  fontWeight: 900,
+                  color: pctColor,
+                  minWidth: 80,
+                  textAlign: "center",
+                }}
+                aria-label="Net percent change"
+              >
+                {fmtPct(n)}
+              </span>
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+
 export default function App() {
-  const isPhone = typeof window !== "undefined" && window.innerWidth <= 767;
-  console.log('isPhone?', isPhone); // (optional) to verify in the console
   const [originalData, setOriginalData] = useState([]);
   const [data, setData] = useState([]);
   const [searchQuery, setSearchQuery] = useState("");
@@ -269,18 +386,71 @@ export default function App() {
   const [target, setTarget] = useState(getNextResetTarget());
   const [tleft, setTleft] = useState(diffToDHMS(target));
 
-  const prizeMap = {
-    1: "$10,000 Funded Account + $250 Cash",
-    2: "$5,000 Funded Account + $150 Cash",
-    3: "$2,500 Funded Account + $75 Cash",
-    4: "$1,000 Instant Funded Upgrade",
-    5: "$1,000 Instant Funded Upgrade",
-    6: "$1,000 Instant Funded Upgrade",
-    7: "$1,000 Instant Funded Upgrade",
-    8: "$1,000 Instant Funded Upgrade",
-    9: "$1,000 Instant Funded Upgrade",
-    10: "$1,000 Instant Funded Upgrade",
-  };
+    // Measure the real header height so the sticky strip matches exactly
+    const theadRef = useRef(null);
+    const [headerH, setHeaderH] = useState(46);
+
+    useLayoutEffect(() => {
+      function measure() {
+        if (theadRef.current) {
+          const h = Math.round(theadRef.current.getBoundingClientRect().height);
+          if (h > 0) setHeaderH(h);
+        }
+      }
+      measure();
+      window.addEventListener("resize", measure);
+      return () => window.removeEventListener("resize", measure);
+    }, []);
+
+    // Detect mobile viewport (<= 768px) to switch prize labels
+    const [isMobile, setIsMobile] = useState(() =>
+    typeof window !== "undefined"
+    ? window.matchMedia("(max-width: 768px)").matches
+    : false
+    );
+    useEffect(() => {
+    if (typeof window === "undefined") return;
+    const mq = window.matchMedia("(max-width: 768px)");
+    const onChange = (e) => setIsMobile(e.matches);
+    mq.addEventListener?.("change", onChange);
+    mq.addListener?.(onChange); // Safari fallback
+    return () => {
+    mq.removeEventListener?.("change", onChange);
+    mq.removeListener?.(onChange);
+    };
+    }, []);
+
+    // Desktop: full amounts with commas
+    const PRIZES_DESKTOP = {
+      1: "$10,000 Funded Account + $250 Cash",
+      2: "$5,000 Funded Account + $150 Cash",
+      3: "$2,500 Funded Account + $75 Cash",
+      4: "$1,000 Instant Funded Upgrade",
+      5: "$1,000 Instant Funded Upgrade",
+      6: "$1,000 Instant Funded Upgrade",
+      7: "$1,000 Instant Funded Upgrade",
+      8: "$1,000 Instant Funded Upgrade",
+      9: "$1,000 Instant Funded Upgrade",
+      10: "$1,000 Instant Funded Upgrade",
+    };
+
+    // Mobile: short K-form
+    const PRIZES_MOBILE = {
+      1: "$10K Account + $250 Cash",
+      2: "$5K Account + $150 Cash",
+      3: "$2.5K Account + $75 Cash",
+      4: "$1K Account Upgrade",
+      5: "$1K Account Upgrade",
+      6: "$1K Account Upgrade",
+      7: "$1K Account Upgrade",
+      8: "$1K Account Upgrade",
+      9: "$1K Account Upgrade",
+      10: "$1K Account Upgrade",
+    };
+
+    // Use mobile map on phones, desktop map otherwise
+    const prizeMap = isMobile ? PRIZES_MOBILE : PRIZES_DESKTOP;
+
 
   async function loadData()
   {
@@ -396,6 +566,19 @@ export default function App() {
     background: "linear-gradient(135deg, #0f0f0f 0%, #222 60%, #d4af37 100%)",
     color: "#fff"
   };
+  // Height of the header strip (matches <th> height)
+  // const LEADERBOARD_HEADER_H = 46; // px (tweak 44–48 if needed)
+
+
+  // Sticky header cells for the leaderboard table
+  const stickyThBase = {
+    position: "sticky",
+    top: 0,             // sticks to the top of the scroll container
+    zIndex: 5,          // stay above table rows
+    // small shadow so the header doesn't visually merge with rows as you scroll
+    boxShadow: "0 2px 0 rgba(0,0,0,0.4)"
+  };
+
   const visibleForPrizes = top30Data.slice(0, 10);
 
   // Live tz label (recomputed each render thanks to the ticking countdown)
@@ -428,7 +611,7 @@ export default function App() {
           animation: "gradientShift 6s ease-in-out infinite"
         }}
       >
-        E2T WORLD CUP COMPETITION --
+        E2T WORLD CUP COMPETITION
       </h1>
 
       <div style={{ ...centerWrap }}>
@@ -454,161 +637,151 @@ export default function App() {
         </div>
       </div>
 
-      <div
-        className="res-row"
-        style={{
-          display: isPhone ? "block" : "flex",  // stack on phones, row on desktop
-          gap: 18,
-          alignItems: "flex-start",
-          ...centerWrap
-        }}
-      >
+      <div className="layout-3col" style={{ ...centerWrap }}>
+        {/* PRIZES */}
+        <div className="col-prizes">
+          <table
+            style={{
+              width: "100%",
+              borderCollapse: "collapse",
+              fontSize: 13,
+              background: "#121212",
+              boxShadow: "0 1px 6px rgba(0,0,0,0.6)",
+              borderRadius: 8,
+              overflow: "hidden",
+              color: "#eaeaea"
+            }}
+          >
 
+              {/* NEW: fix narrow first column so the text column gets more room */}
+              <colgroup>
+                <col style={{ width: 56 }} />  {/* rank/medal strip */}
+                <col />                        {/* amount takes the remaining width */}
+              </colgroup>
 
-      {/* PRIZES */}
-        {isPhone ? null : (
-          <div className="panel panel-prizes" style={{ flex: "0 0 260px" }}>
-            <table
-              style={{
-                width: "100%",
-                borderCollapse: "collapse",
-                fontSize: 13,
-                background: "#121212",
-                boxShadow: "0 1px 6px rgba(0,0,0,0.6)",
-                borderRadius: 8,
-                overflow: "hidden",
-                color: "#eaeaea"
-              }}
-            >
-              <thead style={gradientTheadStyle}>
-                <tr>
-                  <th style={{ padding: "10px 8px", fontWeight: 900, textAlign: "left", fontSize: 14 }}>PRIZES</th>
-                  <th style={{ padding: "10px 8px", fontWeight: 900, textAlign: "right", fontSize: 14 }}>Amount</th>
-                </tr>
-              </thead>
-              <tbody>
-                {visibleForPrizes.length === 0 && (
-                  <tr><td colSpan={2} style={{ padding: 10, color: "#999" }}>No data</td></tr>
-                )}
-                {visibleForPrizes.map((row, idx) => {
-                  const globalRank = idx;
-                  const zebra = { background: idx % 2 === 0 ? "#121212" : "#0f0f0f" };
-                  const highlight = rowStyleForRank(globalRank);
-                  const rowStyle = { ...zebra, ...highlight };
-                  const prize = prizeMap[globalRank + 1] || "";
+            <thead style={gradientTheadStyle}>
+              <tr>
+                <th style={{ padding: "10px 8px", fontWeight: 900, textAlign: "left", fontSize: 14 }}>PRIZES</th>
+                <th style={{ padding: "10px 8px", fontWeight: 900, textAlign: "right", fontSize: 14 }}>AMOUNT</th>
+              </tr>
+            </thead>
+            <tbody>
+              {visibleForPrizes.length === 0 && (
+                <tr><td colSpan={2} style={{ padding: 10, color: "#999" }}>No data</td></tr>
+              )}
+              {visibleForPrizes.map((row, idx) => {
+                const globalRank = idx;
+                const zebra = { background: idx % 2 === 0 ? "#121212" : "#0f0f0f" };
+                const highlight = rowStyleForRank(globalRank);
+                const rowStyle = { ...zebra, ...highlight };
+                const prize = prizeMap[globalRank + 1] || "";
 
-                  const rh = rowHeightForRank(globalRank);
-                  let fs = "13px", fw = 500;
-                  if (globalRank === 0) { fs = "15px"; fw = 800; }
-                  else if (globalRank === 1) { fs = "14px"; fw = 700; }
-                  else if (globalRank === 2) { fs = "13.5px"; fw = 600; }
+                const rh = rowHeightForRank(globalRank);
+                let fs = "13px", fw = 500;
+                if (globalRank === 0) { fs = "15px"; fw = 800; }
+                else if (globalRank === 1) { fs = "14px"; fw = 700; }
+                else if (globalRank === 2) { fs = "13.5px"; fw = 600; }
 
-                  return (
-                    <tr key={idx} style={rowStyle}>
-                      <td style={{
-                        height: rh,
-                        lineHeight: rh + "px",
-                        padding: 0,
-                        fontWeight: 800,
-                        borderLeft: `6px solid ${accentForRank(globalRank)}`
-                      }}>
-                        {rankBadge(globalRank) || (globalRank + 1)}
-                      </td>
-                      <td style={{
-                        height: rh,
-                        lineHeight: rh + "px",
-                        padding: 0,
-                        fontSize: fs,
-                        fontWeight: fw,
-                        textAlign: "right",
-                        whiteSpace: "nowrap",
-                        overflow: "hidden",
-                        textOverflow: "ellipsis"
-                      }}>
-                        {prize}
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-        )}
+                return (
+                  <tr key={idx} style={rowStyle}>
+                    <td style={{
+                      height: rh,
+                      lineHeight: rh + "px",
+                      padding: 0,
+                      paddingLeft: 8,
+                      fontWeight: 800,
+                      borderLeft: `6px solid ${accentForRank(globalRank)}`
+                    }}>
+                      {rankBadge(globalRank) || (globalRank + 1)}
+                    </td>
+                    <td style={{
+                      height: rh,
+                      lineHeight: rh + "px",
+                      padding: 0,
+                      paddingRight: 12,
+                      fontSize: fs,
+                      fontWeight: fw,
+                      textAlign: "right",
+                      whiteSpace: "nowrap",
+                      overflow: "hidden",
+                      textOverflow: "ellipsis"
+                    }}>
+                      {prize}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
 
         {/* LEADERBOARD */}
-        <div className="panel panel-leaderboard" style={{ flex: 1, minWidth: 0 }}>
-            {/* MOBILE cards (phones) */}
-            {false && (
-              <ul className="list mobile-only" style={{ marginBottom: 12 }}>
-              {rowsToRender.length === 0 ? (
-                <li className="row" style={{ color: "#999" }}>No records found.</li>
-              ) : (
-                rowsToRender.map((row, rowIndex) => {
-                  const id = String(row["account_id"] ?? "");
-                  const globalRank = globalRankById[id];
-                  const displayRank = (globalRank >= 0 && Number.isInteger(globalRank)) ? globalRank + 1 : (rowIndex + 1);
+        <div className="col-leaderboard">
+          <div className="desktopOnly" style={{ overflowX: "auto", maxHeight: "70vh", overflowY: "auto" }}>
 
-                  const n = numVal(row["pct_change"]);
-                  const pctColor = n == null ? "#eaeaea" : (n > 0 ? "#34c759" : (n < 0 ? "#ff453a" : "#eaeaea"));
+            {/* STICKY GRADIENT STRIP (behind header text) */}
+            <div
+              style={{
+              position: "sticky",
+              top: 0,
+              height: headerH, // 46px from your constant
+              background: "linear-gradient(135deg, #0f0f0f 0%, #222 60%, #d4af37 100%)",
+              borderTopLeftRadius: 8,
+              borderTopRightRadius: 8,
+              zIndex: 4,
+              marginBottom: -(headerH - 1), // pull table up so <th> sits on this
+              pointerEvents: "none" // don't block scroll/hover
+          }}
+        />
 
-                  return (
-                    <li key={id || rowIndex} className="row">
-                      <div className="line">
-                        <span className="label">Rank</span>
-                        <span style={{ fontWeight: 800 }}>
-                          {rankBadge(globalRank) || displayRank}
-                        </span>
-                      </div>
-                      <div className="line">
-                        <span className="label">Name</span>
-                        <span>{shortName(row["customer_name"])}</span>
-                      </div>
-                      <div className="line">
-                        <span className="label">Net %</span>
-                        <span style={{ color: pctColor, fontWeight: 800 }}>{fmtPct(n)}</span>
-                      </div>
-                      <div className="line">
-                        <span className="label">Capital ($)</span>
-                        <span>{fmtNumber(row["plan"], 0)}</span>
-                      </div>
-                      <div className="line">
-                        <span className="label">Country</span>
-                        <span>{getFlagOnly(row["country"])}</span>
-                      </div>
-                    </li>
-                  );
-                })
-              )}
-            </ul>
-          <div className="table-wrap" style={{ overflowX: "auto", maxHeight: "70vh", overflowY: "auto" }}>
             <table
-              border="1"
               cellPadding="5"
               style={{
                 width: "100%",
-                borderCollapse: "collapse",
+                borderCollapse: "separate",
+                borderSpacing: 0,             // keeps visuals identical to "collapse"
                 textAlign: "center",
                 fontFamily: "inherit",
                 fontSize: "14px",
-                background: "#121212",
+                backgroundColor: "#121212",
                 borderRadius: 8,
-                overflow: "hidden",
+                borderTopLeftRadius: 0,
+                borderTopRightRadius: 0,
+                overflow: "visible",
                 color: "#eaeaea",
-                borderColor: "#1e1e1e"
+                border: "none"
               }}
             >
-              <thead style={gradientTheadStyle}>
+
+              <thead ref={theadRef}>
                 <tr>
-                  {["RANK", "NAME", "NET %", "CAPITAL ($)", "COUNTRY"].map((label, idx) => (
+                  {["RANK", "NAME", "NET %", "CAPITAL ($)", "COUNTRY"].map((label, idx, arr) => (
                     <th
                       key={idx}
-                      style={{ fontWeight: 1000, fontSize: "16px", padding: "10px 6px", whiteSpace: "nowrap", color: "#fff" }}
-                    >
+                      style={{
+                      ...stickyThBase,              // position: "sticky", top: 0, zIndex, shadow
+                      background: "transparent",     // let the table’s gradient show through
+                      color: "#fff",
+                      // typography
+                      fontWeight: 1000,
+                      fontSize: "16px",
+                      padding: "10px 6px",
+                      whiteSpace: "nowrap",
+
+                      // ensure there are no visible seams between cells
+                      border: "none",
+
+                      // rounded ends to match your other panels
+                      borderTopLeftRadius:  idx === 0 ? 8 : 0,
+                      borderTopRightRadius: idx === arr.length - 1 ? 8 : 0
+                    }}
+                  >
                       {label}
                     </th>
                   ))}
                 </tr>
               </thead>
+
               <tbody>
                 {rowsToRender.length === 0 ? (
                   <tr>
@@ -665,10 +838,19 @@ export default function App() {
               </tbody>
             </table>
           </div>
+
+          {/* ===== Mobile cards (phone-only), uses same data ===== */}
+          <div className="mobileOnly">
+            <MobileLeaderboardCards
+              rows={searchQuery ? data : []}
+              rowsTop30={top30Data}
+              globalRankById={globalRankById}
+            />
+          </div>
         </div>
 
         {/* COUNTDOWN */}
-        <div className="panel panel-countdown" style={{ flex: "0 0 260px" }}>
+        <div className="col-countdown">
           <table
             style={{
               width: "100%",
