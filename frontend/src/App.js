@@ -422,9 +422,9 @@ export default function App() {
 
     // Desktop: full amounts with commas
     const PRIZES_DESKTOP = {
-      1: "$10,000 Funded Account + $250 Cash",
-      2: "$5,000 Funded Account + $150 Cash",
-      3: "$2,500 Funded Account + $75 Cash",
+      1: "$10,000 Funded Account",
+      2: "$5,000 Funded Account",
+      3: "$2,500 Funded Account",
       4: "$1,000 Instant Funded Upgrade",
       5: "$1,000 Instant Funded Upgrade",
       6: "$1,000 Instant Funded Upgrade",
@@ -436,9 +436,9 @@ export default function App() {
 
     // Mobile: short K-form
     const PRIZES_MOBILE = {
-      1: "$10K Account + $250 Cash",
-      2: "$5K Account + $150 Cash",
-      3: "$2.5K Account + $75 Cash",
+      1: "$10K Account",
+      2: "$5K Account",
+      3: "$2.5K Account",
       4: "$1K Account Upgrade",
       5: "$1K Account Upgrade",
       6: "$1K Account Upgrade",
