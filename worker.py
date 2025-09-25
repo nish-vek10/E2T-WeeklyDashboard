@@ -89,6 +89,7 @@ SIRIX_TOKEN = os.environ.get("SIRIX_TOKEN", "").strip()
 
 TEST_MODE = os.environ.get("E2T_TEST_MODE", "false").lower() == "true"
 RUN_NOW_ON_START = os.environ.get("E2T_RUN_NOW", "true").lower() == "true"
+E2T_ENABLE_BASELINE_SEED = os.environ.get("E2T_ENABLE_BASELINE_SEED", "false").lower() == "true"
 RATE_DELAY_SEC = float(os.environ.get("E2T_RATE_DELAY_SEC", "0.2"))
 E2T_TZ_LABEL = os.environ.get("E2T_TZ_LABEL", "UTC")
 
@@ -625,78 +626,39 @@ def run_update() -> None:
 # --------------------------------------------------------------------
 def main():
     print(f"[SERVICE] E2T worker running. TZ={E2T_TZ_LABEL}, TEST_MODE={TEST_MODE}, RUN_NOW_ON_START={RUN_NOW_ON_START}")
+    print("[SERVICE] Baseline seeding is DISABLED. Worker will only run 2h updates.")
 
-    # TEST mode: seed baseline immediately, then tick every 2h
+    # TEST mode: just run an immediate update, then tick every 2h
     if TEST_MODE:
-        print("[TEST MODE] Seeding baseline immediately.")
-        seed_baseline(now_iso_utc())
         print("[TEST MODE] Running immediate update.")
         run_update()
         next_run = next_2h_tick_wallclock(now_utc())
+        print(f"[SCHED] Next 2h update at {next_run.isoformat()}.")
     else:
-        now_dt = now_utc()
-        baseline_at = get_current_baseline_at()
-        baseline_missing_or_old = need_new_week(baseline_at, now_dt)
-        baseline_due_at = get_monday_noon(now_dt) if baseline_missing_or_old else None
-
-        # --- NEW: honor RUN_NOW_ON_START before any long sleeps ---
+        # Honor RUN_NOW_ON_START before any long sleeps
         if RUN_NOW_ON_START:
-            if baseline_missing_or_old and now_dt < baseline_due_at:
-                print(f"[RUN-NOW] Baseline is scheduled for Monday 12:00 UTC ({baseline_due_at.isoformat()}).")
-                print("[RUN-NOW] Running an interim 2h update now so data starts flowing immediately.")
-            else:
-                print("[RUN-NOW] Running an immediate 2h update now.")
+            print("[RUN-NOW] Running an immediate 2h update now.")
             run_update()
+        next_run = next_2h_tick_wallclock(now_utc())
+        print(f"[SCHED] Next 2h update at {next_run.isoformat()}.")
 
-        # Decide the next wake time: earliest of {next 2h tick, baseline_due_at (if in future)}
-        now_dt = now_utc()
-        next_tick = next_2h_tick_wallclock(now_dt)
-        if baseline_missing_or_old and now_dt < baseline_due_at:
-            next_run = min(next_tick, baseline_due_at)
-            wait_secs = int((next_run - now_dt).total_seconds())
-            hh, mm = divmod(wait_secs // 60, 60)
-            ss = wait_secs % 60
-            label = "baseline time" if next_run == baseline_due_at else "2h tick"
-            print(f"[SCHED] Sleeping until {label} at {next_run.isoformat()} (~{hh}h {mm}m {ss}s).")
-        else:
-            # Either baseline is due NOW (>= Monday noon), or not missing/outdated
-            if baseline_missing_or_old and now_dt >= baseline_due_at:
-                print("[SCHED] Monday 12:00 UTC reached. Seeding weekly baseline now.")
-                seed_baseline(now_iso_utc())
-            next_run = next_2h_tick_wallclock(now_utc())
-            print(f"[SCHED] Next 2h update at {next_run.isoformat()}.")
-
-    # Main loop: on each wake, seed weekly baseline if due, else run update.
+    # Main loop: wake up on each 2h wall-clock tick and run update
     while True:
         now_dt = now_utc()
         if next_run > now_dt:
             secs = (next_run - now_dt).total_seconds()
-            hh = int(secs // 3600); mm = int((secs % 3600) // 60); ss = int(secs % 60)
+            hh = int(secs // 3600)
+            mm = int((secs % 3600) // 60)
+            ss = int(secs % 60)
             print(f"[SCHED] Next run at {next_run.isoformat()} (in {hh:02d}:{mm:02d}:{ss:02d}).")
             time.sleep(secs)
 
-        # On wake: seed baseline if Monday noon passed and baseline is missing/outdated
-        now_dt = now_utc()
-        baseline_at = get_current_baseline_at()
-        if need_new_week(baseline_at, now_dt):
-            due = get_monday_noon(now_dt)
-            if now_dt >= due:
-                print("[SCHED] Weekly baseline due → seeding now.")
-                seed_baseline(now_iso_utc())
-            else:
-                print(f"[SCHED] Weekly baseline scheduled at {due.isoformat()} (not yet reached). Running update instead.")
-                run_update()
-        else:
-            run_update()
+        # Do the 2h update
+        run_update()
 
-        # After work: plan next wake = earliest of next 2h tick or next baseline due (if earlier)
-        now_dt = now_utc()
-        next_tick = next_2h_tick_wallclock(now_dt)
-        due = get_monday_noon(now_dt)
-        if need_new_week(get_current_baseline_at(), now_dt) and now_dt < due:
-            next_run = min(next_tick, due)
-        else:
-            next_run = next_tick
+        # Plan next wake: next 2h tick
+        next_run = next_2h_tick_wallclock(now_utc())
+        print(f"[SCHED] Next 2h update at {next_run.isoformat()}.")
 
 
 if __name__ == "__main__":
