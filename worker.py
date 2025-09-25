@@ -408,7 +408,7 @@ def classify_and_payload(row_from_crm: Dict[str, Any],
       3) Plan = 50000
       4) Otherwise Active
     """
-    account_id = str(row_from_crm.get(CRM_COL_ACCOUNT_ID))
+    account_id = norm_account_id(row_from_crm.get(CRM_COL_ACCOUNT_ID))
     payload = {
         "account_id": account_id,
         "customer_name": row_from_crm.get(CRM_COL_CUSTOMER),
@@ -443,6 +443,17 @@ def classify_and_payload(row_from_crm: Dict[str, Any],
     # 4) Otherwise Active
     return (TABLE_ACTIVE, payload)
 
+def norm_account_id(v: Any) -> Optional[str]:
+    """Normalize any id to a consistent string like '121477'."""
+    if v is None or (isinstance(v, float) and math.isnan(v)):
+        return None
+    s = str(v).strip()
+    try:
+        # Handles '121477', '121477.0', '  121477  '
+        return str(int(float(s)))
+    except Exception:
+        return s
+
 
 # --------------------------------------------------------------------
 # Baseline helpers (DB)
@@ -459,15 +470,23 @@ def get_current_baseline_at() -> Optional[datetime]:
 
 def load_baseline_map() -> Dict[str, float]:
     """
-    Load ALL baseline rows -> {account_id: baseline_equity}
-    Uses `pg_select_all` to ensure we don’t stop at 1,000 rows.
+    Load ALL baseline rows -> {normalized_account_id: baseline_equity}
+    Handles '121477.0' vs '121477' and CSV numbers like '2,500'.
     """
     rows = pg_select_all(TABLE_BASELINE, "account_id,baseline_equity")
     out: Dict[str, float] = {}
     for r in rows:
+        key = norm_account_id(r.get("account_id"))
+        if not key:
+            continue
+        val = r.get("baseline_equity")
+        if val is None:
+            continue
         try:
-            out[str(r["account_id"])] = float(r["baseline_equity"])
+            num = float(str(val).replace(",", ""))  # allow '2,500'
+            out[key] = num
         except Exception:
+            # skip unparsable values
             pass
     return out
 
@@ -565,16 +584,21 @@ def run_update() -> None:
     start_ts = time.time()
 
     for i, row in df.iterrows():
-        user_id = row.get(CRM_COL_ACCOUNT_ID)
-        print(f"[{i+1}/{total}] Fetching UserID: {user_id} ...")
-        sirix = fetch_sirix_data(user_id)
+        raw_id = row.get(CRM_COL_ACCOUNT_ID)
+        aid = norm_account_id(raw_id)
+        print(f"[{i+1}/{total}] Fetching UserID: {raw_id} -> norm={aid} ...")
+
+        sirix = fetch_sirix_data(aid)  # fetch function also normalizes but this is safe
 
         table, payload = classify_and_payload(row, sirix, None)
+
+        # enforce normalized id everywhere
+        payload["account_id"] = aid
 
         # Only Active rows get pct_change
         if table == TABLE_ACTIVE and sirix:
             equity = sirix.get("Equity")
-            base_eq = base.get(str(user_id))
+            base_eq = base.get(aid)
             pct_change = None
             if base_eq not in (None, 0) and equity not in (None,):
                 try:
@@ -582,23 +606,24 @@ def run_update() -> None:
                 except Exception:
                     pct_change = None
             payload["pct_change"] = pct_change
+
             if pct_change is not None:
-                pct_samples.append(float(pct_change))
+                print(f"[WARN] No baseline match for account {aid}; equity={equity}, baseline={base_eq}")
 
         if table == TABLE_BLOWN:
             blown += 1
-            print(f"    ↳ [BLOWN-UP] UserID {user_id} -> BlownUp table.")
+            print(f"    ↳ [BLOWN-UP] UserID {aid} -> BlownUp table.")
         elif table == TABLE_PURCHASES:
             purchases += 1
-            print(f"    ↳ [PURCHASES(API)] UserID {user_id} -> Purchases table (GroupName='{(sirix or {}).get('GroupName')}').")
+            print(f"    ↳ [PURCHASES(API)] UserID {aid} -> Purchases table (GroupName='{(sirix or {}).get('GroupName')}').")
         elif table == TABLE_PLAN50K:
             plan50k += 1
-            print(f"    ↳ [PLAN=50000] UserID {user_id} -> Plan50000 table.")
+            print(f"    ↳ [PLAN=50000] UserID {aid} -> Plan50000 table.")
         else:
             active += 1
 
         upsert_row(table, payload)
-        move_exclusive(payload["account_id"], table)
+        move_exclusive(aid, table)
 
         if RATE_DELAY_SEC > 0:
             time.sleep(RATE_DELAY_SEC)
