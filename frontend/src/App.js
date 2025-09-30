@@ -611,7 +611,7 @@ export default function App() {
           animation: "gradientShift 6s ease-in-out infinite"
         }}
       >
-        E2T WORLD CUP COMPETITION
+        E2T WEEKLY LEADERBOARD
       </h1>
 
       <div style={{ ...centerWrap }}>
