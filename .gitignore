@@ -10,3 +10,6 @@ frontend/build/
 Thumbs.db
 .idea/
 .vscode/
+
+# Local Netlify folder
+.netlify
