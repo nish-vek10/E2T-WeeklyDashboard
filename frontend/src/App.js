@@ -140,8 +140,8 @@ const COUNTRY_ALIASES = {
   "republic of ireland": "Ireland",
   "eswatini": "Eswatini",
   "kosovo": "Kosovo",
-  "tz": "tanzania united republic of",
-  "tz": "united republic of tanzania"
+  "tanzania united republic of": "tz",
+  "united republic of tanzania": "tz"
 };
 
 function resolveCountryAlpha2(rawName) {
