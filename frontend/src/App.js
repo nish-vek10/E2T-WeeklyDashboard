@@ -140,7 +140,7 @@ const COUNTRY_ALIASES = {
   "republic of ireland": "Ireland",
   "eswatini": "Eswatini",
   "kosovo": "Kosovo",
-  "tanzania united republic of": "tz",
+  "Tanzania United Republic Of": "tz",
   "united republic of tanzania": "tz"
 };
 
