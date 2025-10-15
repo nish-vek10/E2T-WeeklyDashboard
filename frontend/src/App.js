@@ -157,6 +157,10 @@ function resolveCountryAlpha2(rawName) {
   if (!code) {
     const alias = COUNTRY_ALIASES[raw.toLowerCase()];
     if (alias) {
+      // If the alias *is* a 2-letter code like "tz", return it directly
+      if (/^[A-Za-z]{2}$/.test(alias)) {
+        return alias.toLowerCase();
+      }
       code = countries.getAlpha2Code(alias, "en") || (alias.toLowerCase() === "kosovo" ? "XK" : null);
     }
   }
