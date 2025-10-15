@@ -140,37 +140,60 @@ const COUNTRY_ALIASES = {
   "republic of ireland": "Ireland",
   "eswatini": "Eswatini",
   "kosovo": "Kosovo",
-  "tanzania": "Tanzania",
-  "tanzania united republic of": "United Republic of Tanzania",
-  "united republic of tanzania": "United Republic of Tanzania",
-  "Tanzania United Republic Of": "tz",
-  "united republic of tanzania": "tz"
+  "tanzania": "tz",
+  "tanzania, united republic of": "tz",
+  "united republic of tanzania": "tz",
+  "tanzania united republic of": "tz",
 };
 
 function resolveCountryAlpha2(rawName) {
   if (!rawName) return null;
-  const raw = String(rawName).trim();
+
+  // 1) Basic trim first
+  let raw = String(rawName).trim();
   if (!raw) return null;
 
-  // direct lookup
+  // 2) Try direct library lookup first (exact string)
   let code = countries.getAlpha2Code(raw, "en");
 
-  // alias lookup
+  // 3) Prepare multiple normalized forms for alias lookup
+  const rawLower = raw.toLowerCase();
+  const cleanedLower = rawLower.replace(/[().]/g, "").replace(/\s+/g, " ").trim();
+  const fullyNormalized = rawLower
+    .normalize("NFKD")              // decompose accents
+    .replace(/[\u0300-\u036f]/g, "")// strip diacritics
+    .replace(/[().]/g, "")          // remove punctuation we don't care about
+    .replace(/\s+/g, " ")           // collapse all whitespace, incl. NBSP
+    .trim();
+
+  // 4) Alias lookup across all normalized forms
   if (!code) {
-    const alias = COUNTRY_ALIASES[raw.toLowerCase()];
+    const alias =
+      COUNTRY_ALIASES[rawLower] ??
+      COUNTRY_ALIASES[cleanedLower] ??
+      COUNTRY_ALIASES[fullyNormalized];
+
     if (alias) {
-      // If the alias *is* a 2-letter code like "tz", return it directly
+      // If the alias is a 2-letter alpha-2 code (e.g., "tz"), return it directly
       if (/^[A-Za-z]{2}$/.test(alias)) {
         return alias.toLowerCase();
       }
+      // Otherwise, treat alias as a country name and ask the library for it
       code = countries.getAlpha2Code(alias, "en") || (alias.toLowerCase() === "kosovo" ? "XK" : null);
     }
   }
 
-  // punctuation/spacing cleanup & retry
+  // 5) Library retry with our cleaned names (sometimes helps)
   if (!code) {
-    const cleaned = raw.replace(/[().]/g, "").replace(/\s+/g, " ").trim();
-    code = countries.getAlpha2Code(cleaned, "en");
+    code =
+      countries.getAlpha2Code(cleanedLower, "en") ||
+      countries.getAlpha2Code(fullyNormalized, "en");
+  }
+
+  // 6) Last-resort targeted fallbacks (very narrow)
+  if (!code) {
+    // If the string clearly contains 'tanzania', force TZ
+    if (fullyNormalized.includes("tanzania")) return "tz";
   }
 
   return code ? code.toLowerCase() : null;
