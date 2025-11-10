@@ -597,7 +597,7 @@ export default function App() {
     boxShadow: "0 2px 0 rgba(0,0,0,0.4)"
   };
 
-  const visibleForPrizes = top30Data.slice(0, 10);
+  const visibleForPrizes = top30Data.slice(0, 3);
 
   // Live tz label (recomputed each render thanks to the ticking countdown)
   const londonTZ = getLondonTZAbbrev();
