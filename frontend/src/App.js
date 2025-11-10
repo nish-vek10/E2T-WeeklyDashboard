@@ -464,13 +464,6 @@ export default function App() {
       1: "$10K Account",
       2: "$5K Account",
       3: "$2.5K Account",
-      4: "$1K Account Upgrade",
-      5: "$1K Account Upgrade",
-      6: "$1K Account Upgrade",
-      7: "$1K Account Upgrade",
-      8: "$1K Account Upgrade",
-      9: "$1K Account Upgrade",
-      10: "$1K Account Upgrade",
     };
 
     // Use mobile map on phones, desktop map otherwise
