@@ -457,13 +457,6 @@ export default function App() {
       1: "$10,000 Funded Account",
       2: "$5,000 Funded Account",
       3: "$2,500 Funded Account",
-      4: "$1,000 Instant Funded Upgrade",
-      5: "$1,000 Instant Funded Upgrade",
-      6: "$1,000 Instant Funded Upgrade",
-      7: "$1,000 Instant Funded Upgrade",
-      8: "$1,000 Instant Funded Upgrade",
-      9: "$1,000 Instant Funded Upgrade",
-      10: "$1,000 Instant Funded Upgrade",
     };
 
     // Mobile: short K-form
